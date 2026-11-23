@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>Family Hub</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/simple-keyboard@3.8.20/build/css/index.css">
+  <link rel="stylesheet" href="/static/styles.css">
+  <style>[x-cloak] { display: none !important; }</style>
+</head>
+<body class="bg-stone-100 text-stone-900">
+  <div x-data="hub()" x-init="init()" x-cloak class="flex h-full flex-col">
+    <header class="flex shrink-0 items-center gap-6 border-b border-stone-200 bg-stone-900 px-8 py-4 text-white">
+      <div class="min-w-0">
+        <p class="text-3xl font-extrabold tracking-tight">Family Hub</p>
+        <p class="text-lg text-stone-300" x-text="todayLabel()"></p>
+      </div>
+      <nav class="flex flex-1 flex-wrap items-center gap-3" aria-label="Sections">
+        <button type="button" @click="tab = 'calendar'"
+          class="min-h-14 rounded-2xl px-6 text-xl font-bold"
+          :class="tab === 'calendar' ? 'bg-white text-stone-900' : 'bg-stone-800 text-white'">Calendar</button>
+        <button type="button" @click="tab = 'chores'"
+          class="min-h-14 rounded-2xl px-6 text-xl font-bold"
+          :class="tab === 'chores' ? 'bg-white text-stone-900' : 'bg-stone-800 text-white'">Chores</button>
+        <button type="button" @click="tab = 'maintenance'"
+          class="min-h-14 rounded-2xl px-6 text-xl font-bold"
+          :class="tab === 'maintenance' ? 'bg-white text-stone-900' : 'bg-stone-800 text-white'">Home Maintenance</button>
+      </nav>
+    </header>
+
+    <main class="min-h-0 flex-1">
+      <section x-show="tab === 'calendar'" class="flex h-full items-center justify-center px-10">
+        <div class="max-w-3xl text-center">
+          <div class="mx-auto mb-6 flex h-24 w-24 items-center justify-center rounded-3xl bg-white shadow-sm ring-1 ring-stone-200">
+            <svg viewBox="0 0 48 48" class="h-14 w-14 text-teal-700" aria-hidden="true">
+              <rect x="6" y="10" width="36" height="32" rx="4" fill="none" stroke="currentColor" stroke-width="3"></rect>
+              <path d="M6 20h36M16 6v8M32 6v8" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"></path>
+            </svg>
+          </div>
+          <h2 class="text-4xl font-extrabold">Calendar</h2>
+          <p class="mt-4 text-2xl leading-snug text-stone-600">The shared family calendar will show up here in Phase 2.</p>
+        </div>
+      </section>
+
+      <section x-show="tab === 'chores'" class="h-full overflow-y-auto px-10 py-6" :class="keyboardOpen && 'pb-[380px]'">
+        <div class="mb-5 flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <h2 class="text-4xl font-extrabold">Chores</h2>
+            <p class="mt-1 text-xl text-stone-600"><span x-text="openChoreCount"></span> still to do</p>
+          </div>
+          <button type="button" @click="openAddChore()"
+            class="min-h-14 rounded-2xl bg-teal-700 px-6 text-xl font-bold text-white active:bg-teal-800">+ Add Chore</button>
+        </div>
+
+        <div x-show="error" role="alert" class="mb-4 flex items-center justify-between gap-4 rounded-2xl bg-red-100 px-5 py-4 text-lg text-red-900">
+          <span x-text="error"></span>
+          <button type="button" @click="error = ''" class="min-h-12 rounded-xl bg-red-700 px-4 font-bold text-white">Dismiss</button>
+        </div>
+
+        <div class="mb-5 flex flex-wrap gap-3" role="group" aria-label="Filter chores">
+          <button type="button" @click="choreFilter = 'all'"
+            class="min-h-12 rounded-full px-5 text-lg font-bold"
+            :class="choreFilter === 'all' ? 'bg-stone-900 text-white' : 'bg-white text-stone-800 ring-1 ring-stone-300'">All</button>
+          <template x-for="member in members" :key="member.id">
+            <button type="button" @click="choreFilter = member.id"
+              class="inline-flex min-h-12 items-center gap-2 rounded-full px-5 text-lg font-bold"
+              :class="choreFilter === member.id ? 'bg-stone-900 text-white' : 'bg-white text-stone-800 ring-1 ring-stone-300'">
+              <span class="h-4 w-4 rounded-full" :style="`background-color: ${member.color}`"></span>
+              <span x-text="member.name"></span>
+            </button>
+          </template>
+          <button type="button" @click="choreFilter = 'anyone'"
+            class="min-h-12 rounded-full px-5 text-lg font-bold"
+            :class="choreFilter === 'anyone' ? 'bg-stone-900 text-white' : 'bg-white text-stone-800 ring-1 ring-stone-300'">Anyone</button>
+        </div>
+
+        <p x-show="loading && chores.length === 0" class="py-16 text-center text-2xl text-stone-500">Loading…</p>
+        <p x-show="!loading && filteredChores.length === 0" class="rounded-3xl bg-white px-6 py-16 text-center text-2xl text-stone-500 ring-1 ring-stone-200">No chores in this filter.</p>
+
+        <ul class="space-y-4">
+          <template x-for="chore in filteredChores" :key="chore.id">
+            <li class="flex items-stretch gap-4 rounded-3xl bg-white p-4 shadow-sm ring-1 ring-stone-200" :class="chore.completed && 'opacity-70'">
+              <button type="button"
+                class="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl border-4 text-3xl font-bold"
+                :class="chore.completed ? 'border-teal-700 bg-teal-700 text-white' : 'border-stone-300 bg-white text-transparent'"
+                :aria-pressed="chore.completed ? 'true' : 'false'"
+                :aria-label="chore.completed ? 'Mark chore not done' : 'Mark chore done'"
+                @click="toggleChore(chore)">✓</button>
+              <div class="min-w-0 flex-1 py-1">
+                <p class="truncate text-2xl font-bold" :class="chore.completed && 'line-through'" x-text="chore.title"></p>
+                <p class="mt-1 text-lg text-stone-500" x-show="chore.notes" x-text="chore.notes"></p>
+              </div>
+              <div class="flex shrink-0 items-center">
+                <span class="inline-flex min-h-12 items-center rounded-full px-4 text-lg font-bold text-white"
+                  x-show="chore.member_color"
+                  :style="`background-color: ${chore.member_color}`"
+                  x-text="chore.member_name"></span>
+                <span class="inline-flex min-h-12 items-center rounded-full bg-stone-200 px-4 text-lg font-bold text-stone-800"
+                  x-show="!chore.member_color">Anyone</span>
+              </div>
+              <p class="flex w-52 shrink-0 items-center text-lg font-semibold"
+                :class="isChoreOverdue(chore) ? 'text-red-700' : 'text-stone-500'"
+                x-text="choreDueText(chore)"></p>
+              <div class="flex shrink-0 items-center gap-2">
+                <button type="button" @click="openEditChore(chore)"
+                  class="min-h-12 rounded-xl bg-stone-200 px-4 text-lg font-bold text-stone-900">Edit</button>
+                <button type="button" @click="askDelete('chore', chore)"
+                  class="min-h-12 rounded-xl bg-rose-600 px-4 text-lg font-bold text-white">Delete</button>
+              </div>
+            </li>
+          </template>
+        </ul>
+      </section>
+
+      <section x-show="tab === 'maintenance'" class="h-full overflow-y-auto px-10 py-6" :class="keyboardOpen && 'pb-[380px]'">
+        <div class="mb-5 flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <h2 class="text-4xl font-extrabold">Home Maintenance</h2>
+            <p class="mt-1 text-xl text-stone-600">Sorted by next due date</p>
+          </div>
+          <div class="flex flex-wrap gap-3">
+            <button type="button" @click="openAddAsset()"
+              class="min-h-14 rounded-2xl bg-white px-6 text-xl font-bold text-stone-900 ring-1 ring-stone-300">+ Add Asset</button>
+            <button type="button" @click="openAddTask()"
+              class="min-h-14 rounded-2xl bg-teal-700 px-6 text-xl font-bold text-white active:bg-teal-800">+ Add Task</button>
+          </div>
+        </div>
+
+        <div x-show="error && tab === 'maintenance'" role="alert" class="mb-4 flex items-center justify-between gap-4 rounded-2xl bg-red-100 px-5 py-4 text-lg text-red-900">
+          <span x-text="error"></span>
+          <button type="button" @click="error = ''" class="min-h-12 rounded-xl bg-red-700 px-4 font-bold text-white">Dismiss</button>
+        </div>
+
+        <h3 class="mb-3 text-2xl font-bold">Schedule</h3>
+        <p x-show="sortedTasks.length === 0" class="rounded-3xl bg-white px-6 py-10 text-center text-xl text-stone-500 ring-1 ring-stone-200">No maintenance tasks yet.</p>
+        <ul class="grid grid-cols-2 gap-4">
+          <template x-for="task in sortedTasks" :key="task.id">
+            <li class="flex flex-col rounded-3xl bg-white p-5 shadow-sm ring-1 ring-stone-200">
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <p class="text-lg font-semibold text-stone-500">
+                    <span x-text="task.asset_name"></span>
+                    <span x-show="task.asset_location"> · <span x-text="task.asset_location"></span></span>
+                  </p>
+                  <p class="mt-1 text-2xl font-bold" x-text="task.title"></p>
+                </div>
+                <span class="inline-flex min-h-12 shrink-0 items-center rounded-full px-5 text-lg font-bold"
+                  :class="task.status === 'overdue' ? 'bg-red-600 text-white' : task.status === 'due_soon' ? 'bg-yellow-400 text-stone-900' : 'bg-green-600 text-white'"
+                  x-text="statusLabel(task)"></span>
+              </div>
+              <p class="mt-3 text-lg text-stone-600" x-text="intervalLabel(task)"></p>
+              <p class="text-lg text-stone-600">Last done <span x-text="formatDate(task.last_done_date)"></span></p>
+              <p class="mt-2 text-xl font-bold" x-text="duePhrase(task)"></p>
+              <p class="text-lg text-stone-500">Next due <span x-text="formatDate(task.next_due_date)"></span></p>
+              <p class="mt-2 text-lg text-stone-600" x-show="task.notes" x-text="task.notes"></p>
+              <div class="mt-5 flex flex-wrap gap-2">
+                <button type="button" @click="markTaskDone(task)" :disabled="isBusy('done-' + task.id)"
+                  class="min-h-14 flex-1 rounded-2xl bg-teal-700 px-4 text-xl font-bold text-white active:bg-teal-800 disabled:opacity-60">Mark Done</button>
+                <button type="button" @click="openEditTask(task)"
+                  class="min-h-14 rounded-2xl bg-stone-200 px-5 text-lg font-bold">Edit</button>
+                <button type="button" @click="askDelete('task', task)"
+                  class="min-h-14 rounded-2xl bg-rose-600 px-5 text-lg font-bold text-white">Delete</button>
+              </div>
+            </li>
+          </template>
+        </ul>
+
+        <h3 class="mb-3 text-2xl font-bold">Assets</h3>
+        <p x-show="assets.length === 0" class="mb-6 rounded-3xl bg-white px-6 py-10 text-center text-xl text-stone-500 ring-1 ring-stone-200">No assets yet. Add the things you maintain around the house.</p>
+        <ul class="mb-8 grid grid-cols-3 gap-4">
+          <template x-for="asset in assets" :key="asset.id">
+            <li class="rounded-3xl bg-white p-5 shadow-sm ring-1 ring-stone-200">
+              <p class="text-2xl font-bold" x-text="asset.name"></p>
+              <p class="mt-1 text-lg text-stone-500" x-text="asset.location || 'No location'"></p>
+              <p class="mt-2 text-lg text-stone-600" x-show="asset.notes" x-text="asset.notes"></p>
+              <p class="mt-3 text-lg font-semibold text-stone-700"><span x-text="taskCount(asset)"></span> tasks</p>
+              <div class="mt-4 flex gap-2">
+                <button type="button" @click="openEditAsset(asset)"
+                  class="min-h-12 flex-1 rounded-xl bg-stone-200 text-lg font-bold">Edit</button>
+                <button type="button" @click="askDelete('asset', asset)"
+                  class="min-h-12 flex-1 rounded-xl bg-rose-600 text-lg font-bold text-white">Delete</button>
+              </div>
+            </li>
+          </template>
+        </ul>
+
+        
+      </section>
+    </main>
+
+    <div id="keyboard-dock"
+      class="fixed inset-x-0 bottom-0 z-50 border-t-4 border-teal-700 bg-stone-800 shadow-2xl transition-transform duration-200"
+      :class="keyboardOpen ? 'translate-y-0' : 'pointer-events-none translate-y-full'"
+      :aria-hidden="keyboardOpen ? 'false' : 'true'">
+      <div class="flex items-center justify-between px-4 py-2">
+        <p class="px-2 text-lg font-semibold text-stone-200">Keyboard</p>
+        <button type="button" @pointerup.prevent="closeKeyboard(true)"
+          class="min-h-12 rounded-xl bg-teal-600 px-8 text-xl font-bold text-white">Done</button>
+      </div>
+      <div id="osk" class="simple-keyboard"></div>
+    </div>
+
+    <div x-show="showChoreModal" class="fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-stone-900/50 p-8 pt-12" @pointerdown.self="closeChoreModal()">
+      <form class="w-full max-w-3xl rounded-3xl bg-white p-8 shadow-2xl" @submit.prevent="saveChore()">
+        <h3 class="text-3xl font-extrabold" x-text="choreForm.id ? 'Edit chore' : 'Add chore'"></h3>
+        <label class="mt-6 block text-lg font-bold" for="chore-title">Title</label>
+        <input id="chore-title" x-ref="choreTitle" x-model="choreForm.title" type="text" inputmode="none" data-keyboard="text" maxlength="200" required
+          class="mt-2 w-full rounded-2xl border-2 border-stone-300 px-4 text-xl">
+        <label class="mt-5 block text-lg font-bold" for="chore-notes">Notes</label>
+        <textarea id="chore-notes" x-model="choreForm.notes" inputmode="none" data-keyboard="text" maxlength="2000" rows="3"
+          class="mt-2 w-full rounded-2xl border-2 border-stone-300 px-4 py-3 text-xl"></textarea>
+        <label class="mt-5 block text-lg font-bold" for="chore-member">Assign to</label>
+        <select id="chore-member" x-model="choreForm.family_member_id" class="mt-2 w-full rounded-2xl border-2 border-stone-300 px-4 text-xl">
+          <option value="">Anyone</option>
+          <template x-for="member in members" :key="member.id">
+            <option :value="member.id" x-text="member.name"></option>
+          </template>
+        </select>
+        <label class="mt-5 block text-lg font-bold" for="chore-due">Due date</label>
+        <input id="chore-due" x-model="choreForm.due_date" type="date" class="mt-2 w-full rounded-2xl border-2 border-stone-300 px-4 text-xl">
+        <div class="mt-8 flex justify-end gap-3">
+          <button type="button" @click="closeChoreModal()" class="min-h-14 rounded-2xl bg-stone-200 px-6 text-xl font-bold">Cancel</button>
+          <button type="submit" :disabled="isBusy('chore-save')" class="min-h-14 rounded-2xl bg-teal-700 px-6 text-xl font-bold text-white disabled:opacity-60">Save</button>
+        </div>
+      </form>
+    </div>
+
+    <div x-show="showAssetModal" class="fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-stone-900/50 p-8 pt-12" @pointerdown.self="closeAssetModal()">
+      <form class="w-full max-w-3xl rounded-3xl bg-white p-8 shadow-2xl" @submit.prevent="saveAsset()">
+        <h3 class="text-3xl font-extrabold" x-text="assetForm.id ? 'Edit asset' : 'Add asset'"></h3>
+        <label class="mt-6 block text-lg font-bold" for="asset-name">Name</label>
+        <input id="asset-name" x-ref="assetName" x-model="assetForm.name" type="text" inputmode="none" data-keyboard="text" maxlength="120" required
+          class="mt-2 w-full rounded-2xl border-2 border-stone-300 px-4 text-xl">
+        <label class="mt-5 block text-lg font-bold" for="asset-location">Location</label>
+        <input id="asset-location" x-model="assetForm.location" type="text" inputmode="none" data-keyboard="text" maxlength="200"
+          class="mt-2 w-full rounded-2xl border-2 border-stone-300 px-4 text-xl">
+        <label class="mt-5 block text-lg font-bold" for="asset-notes">Notes</label>
+        <textarea id="asset-notes" x-model="assetForm.notes" inputmode="none" data-keyboard="text" maxlength="2000" rows="3"
+          class="mt-2 w-full rounded-2xl border-2 border-stone-300 px-4 py-3 text-xl"></textarea>
+        <div class="mt-8 flex justify-end gap-3">
+          <button type="button" @click="closeAssetModal()" class="min-h-14 rounded-2xl bg-stone-200 px-6 text-xl font-bold">Cancel</button>
+          <button type="submit" :disabled="isBusy('asset-save')" class="min-h-14 rounded-2xl bg-teal-700 px-6 text-xl font-bold text-white disabled:opacity-60">Save</button>
+        </div>
+      </form>
+    </div>
+
+    <div x-show="showTaskModal" class="fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-stone-900/50 p-8 pt-12" @pointerdown.self="closeTaskModal()">
+      <form class="w-full max-w-3xl rounded-3xl bg-white p-8 shadow-2xl" @submit.prevent="saveTask()">
+        <h3 class="text-3xl font-extrabold" x-text="taskForm.id ? 'Edit task' : 'Add maintenance task'"></h3>
+        <p x-show="assets.length === 0" class="mt-4 text-xl text-red-700">Add an asset first. A task has to belong to something in the house.</p>
+        <label class="mt-6 block text-lg font-bold" for="task-asset">Asset</label>
+        <select id="task-asset" x-model="taskForm.asset_id" class="mt-2 w-full rounded-2xl border-2 border-stone-300 px-4 text-xl" :disabled="assets.length === 0">
+          <template x-for="asset in assets" :key="asset.id">
+            <option :value="asset.id" x-text="asset.name"></option>
+          </template>
+        </select>
+        <label class="mt-5 block text-lg font-bold" for="task-title">Title</label>
+        <input id="task-title" x-ref="taskTitle" x-model="taskForm.title" type="text" inputmode="none" data-keyboard="text" maxlength="200" required
+          class="mt-2 w-full rounded-2xl border-2 border-stone-300 px-4 text-xl">
+        <label class="mt-5 block text-lg font-bold" for="task-notes">Notes</label>
+        <textarea id="task-notes" x-model="taskForm.notes" inputmode="none" data-keyboard="text" maxlength="2000" rows="3"
+          class="mt-2 w-full rounded-2xl border-2 border-stone-300 px-4 py-3 text-xl"></textarea>
+        <div class="mt-5 grid grid-cols-2 gap-4">
+          <div>
+            <label class="block text-lg font-bold" for="task-interval">Repeat every</label>
+            <input id="task-interval" x-model="taskForm.interval_value" type="text" inputmode="none" data-keyboard="numeric" maxlength="3"
+              class="mt-2 w-full rounded-2xl border-2 border-stone-300 px-4 text-xl">
+          </div>
+          <div>
+            <label class="block text-lg font-bold" for="task-unit">Unit</label>
+            <select id="task-unit" x-model="taskForm.interval_unit" class="mt-2 w-full rounded-2xl border-2 border-stone-300 px-4 text-xl">
+              <option value="days">Days</option>
+              <option value="weeks">Weeks</option>
+              <option value="months">Months</option>
+              <option value="years">Years</option>
+            </select>
+          </div>
+        </div>
+        <label class="mt-5 block text-lg font-bold" for="task-last">Last done</label>
+        <input id="task-last" x-model="taskForm.last_done_date" type="date" class="mt-2 w-full rounded-2xl border-2 border-stone-300 px-4 text-xl">
+        <p class="mt-2 text-lg text-stone-500">Leave last done empty if it has never been recorded. It will show as due today.</p>
+        <div class="mt-8 flex justify-end gap-3">
+          <button type="button" @click="closeTaskModal()" class="min-h-14 rounded-2xl bg-stone-200 px-6 text-xl font-bold">Cancel</button>
+          <button type="submit" :disabled="isBusy('task-save') || assets.length === 0" class="min-h-14 rounded-2xl bg-teal-700 px-6 text-xl font-bold text-white disabled:opacity-60">Save</button>
+        </div>
+      </form>
+    </div>
+
+    <div x-show="showDeleteModal" class="fixed inset-0 z-40 flex items-start justify-center bg-stone-900/50 p-8 pt-24" @pointerdown.self="closeDeleteModal()">
+      <div class="w-full max-w-xl rounded-3xl bg-white p-8 shadow-2xl">
+        <h3 class="text-3xl font-extrabold">Delete this?</h3>
+        <p class="mt-4 text-xl text-stone-700" x-text="pendingDelete ? pendingDelete.name : ''"></p>
+        <p class="mt-2 text-lg text-stone-500" x-show="pendingDelete && pendingDelete.kind === 'asset'">Deleting an asset also removes its maintenance tasks.</p>
+        <div class="mt-8 flex justify-end gap-3">
+          <button type="button" @click="closeDeleteModal()" class="min-h-14 rounded-2xl bg-stone-200 px-6 text-xl font-bold">Cancel</button>
+          <button type="button" @click="confirmDelete()" :disabled="isBusy('delete')"
+            class="min-h-14 rounded-2xl bg-rose-600 px-6 text-xl font-bold text-white disabled:opacity-60">Delete</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/simple-keyboard@3.8.20/build/index.js"></script>
+  <script src="/static/app.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.9/dist/cdn.min.js"></script>
+</body>
+</html>

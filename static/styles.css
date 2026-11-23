@@ -1,0 +1,65 @@
+html {
+  font-size: 20px;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+body {
+  font-family: "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+button,
+[role="button"],
+select,
+input,
+textarea,
+label {
+  touch-action: manipulation;
+}
+
+button,
+select,
+input[type="date"],
+input[type="text"],
+textarea {
+  min-height: 48px;
+}
+
+button {
+  min-width: 48px;
+}
+
+#keyboard-dock .hg-button {
+  min-height: 56px !important;
+  height: 56px;
+  font-size: 1.35rem;
+}
+
+#keyboard-dock .hg-button.hk-done {
+  background: #0f766e;
+  color: #fff;
+  font-weight: 700;
+  min-width: 7rem;
+}
+
+#keyboard-dock .simple-keyboard {
+  background: #292524;
+  padding: 0.5rem 0.75rem 0.85rem;
+}
+
+#keyboard-dock .hg-button {
+  background: #fafaf9;
+  color: #1c1917;
+  border-radius: 0.7rem;
+}
+
+#keyboard-dock .hg-button:active {
+  background: #99f6e4;
+}
