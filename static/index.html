@@ -30,17 +30,51 @@
     </header>
 
     <main class="min-h-0 flex-1">
-      <section x-show="tab === 'calendar'" class="flex h-full items-center justify-center px-10">
-        <div class="max-w-3xl text-center">
-          <div class="mx-auto mb-6 flex h-24 w-24 items-center justify-center rounded-3xl bg-white shadow-sm ring-1 ring-stone-200">
-            <svg viewBox="0 0 48 48" class="h-14 w-14 text-teal-700" aria-hidden="true">
-              <rect x="6" y="10" width="36" height="32" rx="4" fill="none" stroke="currentColor" stroke-width="3"></rect>
-              <path d="M6 20h36M16 6v8M32 6v8" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"></path>
-            </svg>
+      <section x-show="tab === 'calendar'" class="flex h-full min-h-0 flex-col px-6 py-4">
+        <div class="mb-3 flex flex-wrap items-center gap-3">
+          <div class="flex flex-wrap gap-2" role="group" aria-label="Calendar view">
+            <button type="button" @click="setCalendarView('timeGridDay')"
+              class="min-h-12 rounded-2xl px-5 text-lg font-bold"
+              :class="calendarView === 'timeGridDay' ? 'bg-stone-900 text-white' : 'bg-white text-stone-800 ring-1 ring-stone-300'">1-Day</button>
+            <button type="button" @click="setCalendarView('timeGridThreeDay')"
+              class="min-h-12 rounded-2xl px-5 text-lg font-bold"
+              :class="calendarView === 'timeGridThreeDay' ? 'bg-stone-900 text-white' : 'bg-white text-stone-800 ring-1 ring-stone-300'">3-Day</button>
+            <button type="button" @click="setCalendarView('timeGridWeek')"
+              class="min-h-12 rounded-2xl px-5 text-lg font-bold"
+              :class="calendarView === 'timeGridWeek' ? 'bg-stone-900 text-white' : 'bg-white text-stone-800 ring-1 ring-stone-300'">1-Week</button>
           </div>
-          <h2 class="text-4xl font-extrabold">Calendar</h2>
-          <p class="mt-4 text-2xl leading-snug text-stone-600">The shared family calendar will show up here in Phase 2.</p>
+          <div class="flex flex-wrap items-center gap-2">
+            <button type="button" @click="moveCalendar('today')"
+              class="min-h-12 rounded-2xl bg-white px-5 text-lg font-bold text-stone-900 ring-1 ring-stone-300">Today</button>
+            <button type="button" @click="moveCalendar('prev')" aria-label="Previous"
+              class="min-h-12 min-w-12 rounded-2xl bg-white px-4 text-2xl font-bold text-stone-900 ring-1 ring-stone-300">&lt;</button>
+            <button type="button" @click="moveCalendar('next')" aria-label="Next"
+              class="min-h-12 min-w-12 rounded-2xl bg-white px-4 text-2xl font-bold text-stone-900 ring-1 ring-stone-300">&gt;</button>
+          </div>
+          <p class="min-w-0 flex-1 truncate text-2xl font-extrabold" x-text="calendarLabel"></p>
+          <button type="button" @click="openNewEvent()"
+            class="min-h-12 rounded-2xl bg-teal-700 px-5 text-lg font-bold text-white active:bg-teal-800">+ Event</button>
         </div>
+
+        <div class="mb-3 flex flex-wrap gap-2" role="group" aria-label="Family calendars">
+          <template x-for="member in members" :key="member.id">
+            <button type="button" @click="toggleMemberFilter(member.id)"
+              class="inline-flex min-h-12 items-center gap-2 rounded-full px-4 text-lg font-bold"
+              :aria-pressed="isMemberVisible(member.id) ? 'true' : 'false'"
+              :class="isMemberVisible(member.id) ? 'text-white' : 'bg-white text-stone-400 line-through ring-1 ring-stone-300'"
+              :style="isMemberVisible(member.id) ? `background-color: ${member.color}` : ''">
+              <span class="h-4 w-4 rounded-full ring-2 ring-white/70" :style="`background-color: ${member.color}`"></span>
+              <span x-text="member.name"></span>
+            </button>
+          </template>
+        </div>
+
+        <div x-show="error" role="alert" class="mb-3 flex items-center justify-between gap-4 rounded-2xl bg-red-100 px-5 py-3 text-lg text-red-900">
+          <span x-text="error"></span>
+          <button type="button" @click="error = ''" class="min-h-12 rounded-xl bg-red-700 px-4 font-bold text-white">Dismiss</button>
+        </div>
+
+        <div x-ref="calendarHost" x-init="$nextTick(() => ensureCalendar())" class="touch-calendar min-h-0 flex-1"></div>
       </section>
 
       <section x-show="tab === 'chores'" class="h-full overflow-y-auto px-10 py-6" :class="keyboardOpen && 'pb-[380px]'">
@@ -287,6 +321,104 @@
       </form>
     </div>
 
+    <div x-show="showEventModal" class="fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-stone-900/50 p-6"
+      :class="keyboardOpen && 'pb-[380px]'" @pointerdown.self="closeEventModal()">
+      <form class="my-4 w-full max-w-3xl rounded-3xl bg-white p-8 shadow-2xl" @submit.prevent="saveEvent()">
+        <h3 class="text-3xl font-extrabold" x-text="eventForm.id ? 'Edit event' : 'New event'"></h3>
+        <p class="mt-2 text-lg text-stone-600" x-show="eventForm.rrule" x-text="repeatLabel(eventForm.rrule)"></p>
+        <p x-show="eventError" role="alert" class="mt-4 rounded-2xl bg-red-100 px-4 py-3 text-lg text-red-900" x-text="eventError"></p>
+
+        <label class="mt-6 block text-lg font-bold" for="event-title">Title</label>
+        <input id="event-title" x-ref="eventTitle" x-model="eventForm.title" type="text" inputmode="none" data-keyboard="text" maxlength="200" required
+          class="mt-2 w-full rounded-2xl border-2 border-stone-300 px-4 text-xl">
+
+        <label class="mt-5 block text-lg font-bold" for="event-notes">Notes</label>
+        <textarea id="event-notes" x-model="eventForm.description" inputmode="none" data-keyboard="text" maxlength="4000" rows="2"
+          class="mt-2 w-full rounded-2xl border-2 border-stone-300 px-4 py-3 text-xl"></textarea>
+
+        <p class="mt-5 text-lg font-bold">Who</p>
+        <div class="mt-2 flex flex-wrap gap-2" role="group" aria-label="Assign family member">
+          <button type="button" @click="eventForm.member_id = ''"
+            class="min-h-12 rounded-full px-4 text-lg font-bold"
+            :class="eventForm.member_id === '' ? 'bg-stone-900 text-white' : 'bg-stone-200 text-stone-800'">Anyone</button>
+          <template x-for="member in members" :key="'event-' + member.id">
+            <button type="button" @click="eventForm.member_id = String(member.id)"
+              class="inline-flex min-h-12 items-center gap-2 rounded-full px-4 text-lg font-bold text-white"
+              :class="String(eventForm.member_id) === String(member.id) ? 'ring-4 ring-stone-900' : 'opacity-55'"
+              :style="`background-color: ${member.color}`">
+              <span x-text="member.name"></span>
+            </button>
+          </template>
+        </div>
+
+        <div class="mt-5">
+          <button type="button" @click="toggleAllDay()"
+            class="min-h-12 rounded-2xl px-5 text-lg font-bold"
+            :class="eventForm.all_day ? 'bg-teal-700 text-white' : 'bg-stone-200 text-stone-900'"
+            :aria-pressed="eventForm.all_day ? 'true' : 'false'">All day</button>
+        </div>
+
+        <div class="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div>
+            <p class="text-lg font-bold">Start date</p>
+            <div class="mt-2 flex items-center gap-2">
+              <button type="button" @click="shiftEventDay('start', -1)" aria-label="Previous day"
+                class="min-h-12 min-w-12 rounded-2xl bg-stone-200 text-3xl font-bold">−</button>
+              <input x-model="eventForm.start_date" @change="onEventDateChange('start')" type="date" aria-label="Start date"
+                class="min-h-12 flex-1 rounded-2xl border-2 border-stone-300 px-3 text-xl">
+              <button type="button" @click="shiftEventDay('start', 1)" aria-label="Next day"
+                class="min-h-12 min-w-12 rounded-2xl bg-stone-200 text-3xl font-bold">+</button>
+            </div>
+          </div>
+          <div>
+            <p class="text-lg font-bold" x-text="eventForm.all_day ? 'End date' : 'End date'"></p>
+            <div class="mt-2 flex items-center gap-2">
+              <button type="button" @click="shiftEventDay('end', -1)" aria-label="Earlier end date"
+                class="min-h-12 min-w-12 rounded-2xl bg-stone-200 text-3xl font-bold">−</button>
+              <input x-model="eventForm.end_date" @change="onEventDateChange('end')" type="date" aria-label="End date"
+                class="min-h-12 flex-1 rounded-2xl border-2 border-stone-300 px-3 text-xl">
+              <button type="button" @click="shiftEventDay('end', 1)" aria-label="Later end date"
+                class="min-h-12 min-w-12 rounded-2xl bg-stone-200 text-3xl font-bold">+</button>
+            </div>
+          </div>
+        </div>
+
+        <div x-show="!eventForm.all_day" class="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div>
+            <p class="text-lg font-bold">Start time</p>
+            <div class="mt-2 flex items-center justify-between gap-3 rounded-2xl bg-stone-100 px-3 py-2">
+              <button type="button" @click="shiftEventTime('start', -15)" aria-label="Start 15 minutes earlier"
+                class="min-h-12 min-w-16 rounded-2xl bg-white text-2xl font-extrabold ring-1 ring-stone-300">−15</button>
+              <p class="text-2xl font-extrabold" x-text="minutesLabel(eventForm.start_minutes)"></p>
+              <button type="button" @click="shiftEventTime('start', 15)" aria-label="Start 15 minutes later"
+                class="min-h-12 min-w-16 rounded-2xl bg-white text-2xl font-extrabold ring-1 ring-stone-300">+15</button>
+            </div>
+          </div>
+          <div>
+            <p class="text-lg font-bold">End time</p>
+            <div class="mt-2 flex items-center justify-between gap-3 rounded-2xl bg-stone-100 px-3 py-2">
+              <button type="button" @click="shiftEventTime('end', -15)" aria-label="End 15 minutes earlier"
+                class="min-h-12 min-w-16 rounded-2xl bg-white text-2xl font-extrabold ring-1 ring-stone-300">−15</button>
+              <p class="text-2xl font-extrabold" x-text="minutesLabel(eventForm.end_minutes)"></p>
+              <button type="button" @click="shiftEventTime('end', 15)" aria-label="End 15 minutes later"
+                class="min-h-12 min-w-16 rounded-2xl bg-white text-2xl font-extrabold ring-1 ring-stone-300">+15</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="mt-8 flex flex-wrap items-center justify-between gap-3">
+          <button type="button" x-show="eventForm.id" @click="deleteEventTap()" :disabled="isBusy('event-delete')"
+            class="min-h-12 rounded-2xl px-5 text-lg font-bold text-white disabled:opacity-60"
+            :class="eventDeleteArmed ? 'bg-rose-800' : 'bg-rose-600'"
+            x-text="eventDeleteArmed ? 'Tap again to delete' : (eventForm.rrule ? 'Delete series' : 'Delete')"></button>
+          <div class="ml-auto flex gap-3">
+            <button type="button" @click="closeEventModal()" class="min-h-12 rounded-2xl bg-stone-200 px-6 text-lg font-bold">Cancel</button>
+            <button type="submit" :disabled="isBusy('event-save')" class="min-h-12 rounded-2xl bg-teal-700 px-6 text-lg font-bold text-white disabled:opacity-60">Save</button>
+          </div>
+        </div>
+      </form>
+    </div>
+
     <div x-show="showDeleteModal" class="fixed inset-0 z-40 flex items-start justify-center bg-stone-900/50 p-8 pt-24" @pointerdown.self="closeDeleteModal()">
       <div class="w-full max-w-xl rounded-3xl bg-white p-8 shadow-2xl">
         <h3 class="text-3xl font-extrabold">Delete this?</h3>
@@ -302,6 +434,7 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/simple-keyboard@3.8.20/build/index.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js"></script>
   <script src="/static/app.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.9/dist/cdn.min.js"></script>
 </body>

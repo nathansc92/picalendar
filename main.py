@@ -1,4 +1,10 @@
-"""Family hub kiosk API. Phase 1: members, chores, assets, and maintenance."""
+"""Family hub kiosk API.
+
+Phase 2 calendar routes read and write SQLite only. `calendar_write_through`
+is the seam Phase 3 should replace with Google Calendar insert, patch, and
+delete calls. Those hooks run before the SQLite write and can raise
+HTTPException to leave the local row unchanged.
+"""
 
 from __future__ import annotations
 
@@ -16,8 +22,11 @@ from pydantic import BaseModel, Field, field_validator
 from database import (
     classify_due,
     compute_next_due,
+    expand_events,
     get_connection,
     init_db,
+    normalize_rrule,
+    parse_local_datetime,
     shift_date,
 )
 
@@ -152,6 +161,83 @@ class MaintenanceTaskOut(BaseModel):
     created_at: str
 
 
+class EventIn(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=4000)
+    member_id: int | None = None
+    calendar_id: str | None = Field(default=None, max_length=200)
+    start_time: str = Field(min_length=8, max_length=40)
+    end_time: str = Field(min_length=8, max_length=40)
+    all_day: bool = False
+    rrule: str | None = Field(default=None, max_length=500)
+    google_event_id: str | None = Field(default=None, max_length=1024)
+
+    @field_validator("title")
+    @classmethod
+    def strip_title(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Title is required")
+        return cleaned
+
+    @field_validator("description")
+    @classmethod
+    def strip_description(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("calendar_id", "rrule", "google_event_id")
+    @classmethod
+    def strip_optional(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
+
+class EventOut(BaseModel):
+    id: int
+    google_event_id: str | None
+    calendar_id: str
+    member_id: int | None
+    member_name: str | None
+    color_hex: str | None
+    title: str
+    description: str
+    start_time: str
+    end_time: str
+    all_day: bool
+    rrule: str | None
+    updated_at: str | None
+
+
+class EventOccurrenceOut(EventOut):
+    occurrence_id: str
+    series_start: str
+    series_end: str
+
+
+class CalendarWriteThrough:
+    """Phase 3 replaces this object with Google Calendar API calls.
+
+    on_create and on_update return the google_event_id to store. on_delete
+    runs before the local row is removed. Raise HTTPException to abort.
+    """
+
+    def on_create(self, payload: EventIn) -> str | None:
+        return payload.google_event_id
+
+    def on_update(self, existing: sqlite3.Row, payload: EventIn) -> str | None:
+        if payload.google_event_id:
+            return payload.google_event_id
+        return existing["google_event_id"]
+
+    def on_delete(self, existing: sqlite3.Row) -> None:
+        return None
+
+
+calendar_write_through = CalendarWriteThrough()
+
+
 CHORE_SQL = """
 SELECT c.id, c.title, c.notes, c.family_member_id, c.due_date, c.completed,
        c.completed_at, c.created_at, m.name AS member_name, m.color AS member_color
@@ -165,6 +251,14 @@ SELECT t.id, t.asset_id, t.title, t.notes, t.interval_value, t.interval_unit,
        a.name AS asset_name, a.location AS asset_location
 FROM maintenance_tasks t
 JOIN assets a ON a.id = t.asset_id
+"""
+
+EVENT_SQL = """
+SELECT e.id, e.google_event_id, e.calendar_id, e.member_id, e.title, e.description,
+       e.start_time, e.end_time, e.all_day, e.rrule, e.updated_at,
+       m.name AS member_name, m.color AS color_hex
+FROM events e
+LEFT JOIN family_members m ON m.id = e.member_id
 """
 
 
@@ -268,6 +362,66 @@ def require_task(conn: sqlite3.Connection, task_id: int) -> sqlite3.Row:
     if row is None:
         raise HTTPException(status_code=404, detail="Maintenance task not found")
     return row
+
+
+def require_event(conn: sqlite3.Connection, event_id: int) -> sqlite3.Row:
+    row = conn.execute(EVENT_SQL + " WHERE e.id = ?", (event_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Event not found")
+    return row
+
+
+def event_out(row: sqlite3.Row) -> EventOut:
+    return EventOut(
+        id=row["id"],
+        google_event_id=row["google_event_id"],
+        calendar_id=row["calendar_id"] or "primary",
+        member_id=row["member_id"],
+        member_name=row["member_name"],
+        color_hex=row["color_hex"],
+        title=row["title"],
+        description=row["description"] or "",
+        start_time=row["start_time"],
+        end_time=row["end_time"],
+        all_day=bool(row["all_day"]),
+        rrule=row["rrule"],
+        updated_at=row["updated_at"],
+    )
+
+
+def parse_event_input(value: str, all_day: bool) -> datetime:
+    text = value.strip()
+    if all_day:
+        try:
+            return datetime.fromisoformat(text[:10])
+        except ValueError as exc:
+            raise ValueError("Date must be ISO 8601") from exc
+    parsed = parse_local_datetime(text)
+    return parsed.replace(second=0, microsecond=0)
+
+
+def canonical_event_times(payload: EventIn) -> tuple[str, str, datetime]:
+    try:
+        start_dt = parse_event_input(payload.start_time, payload.all_day)
+        end_dt = parse_event_input(payload.end_time, payload.all_day)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Start and end must be ISO 8601 values") from exc
+    if end_dt <= start_dt:
+        raise HTTPException(status_code=400, detail="End time must be after the start time")
+    if payload.all_day:
+        return start_dt.date().isoformat(), end_dt.date().isoformat(), start_dt
+    return (
+        start_dt.strftime("%Y-%m-%dT%H:%M:%S"),
+        end_dt.strftime("%Y-%m-%dT%H:%M:%S"),
+        start_dt,
+    )
+
+
+def validated_rrule(payload: EventIn, start_dt: datetime) -> str | None:
+    try:
+        return normalize_rrule(payload.rrule, start_dt)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def iso_date(value: date | None) -> str | None:
@@ -581,6 +735,121 @@ def mark_task_done(task_id: int) -> MaintenanceTaskOut:
         )
         updated = require_task(conn, task_id)
     return task_out(updated, today)
+
+
+@app.get("/api/events", response_model=list[EventOccurrenceOut])
+def list_events(
+    start: str = Query(..., description="Range start, ISO 8601"),
+    end: str = Query(..., description="Range end, ISO 8601, exclusive"),
+) -> list[dict]:
+    try:
+        range_start = parse_local_datetime(start)
+        range_end = parse_local_datetime(end)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="start and end must be ISO 8601 datetimes") from exc
+    if range_end <= range_start:
+        raise HTTPException(status_code=400, detail="end must be after start")
+    with get_connection() as conn:
+        rows = conn.execute(EVENT_SQL + " ORDER BY e.start_time, e.id").fetchall()
+        return expand_events(rows, range_start, range_end)
+
+
+@app.post("/api/events", response_model=EventOut, status_code=201)
+def create_event(payload: EventIn) -> EventOut:
+    start_s, end_s, start_dt = canonical_event_times(payload)
+    rrule = validated_rrule(payload, start_dt)
+    with get_connection() as conn:
+        require_member(conn, payload.member_id)
+    google_event_id = calendar_write_through.on_create(payload)
+    updated_at = datetime.now().astimezone().isoformat(timespec="seconds")
+    with get_connection() as conn:
+        require_member(conn, payload.member_id)
+        try:
+            cursor = conn.execute(
+                """
+                INSERT INTO events (
+                    google_event_id, calendar_id, member_id, title, description,
+                    start_time, end_time, all_day, rrule, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    google_event_id,
+                    payload.calendar_id or "primary",
+                    payload.member_id,
+                    payload.title,
+                    payload.description,
+                    start_s,
+                    end_s,
+                    1 if payload.all_day else 0,
+                    rrule,
+                    updated_at,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="An event with that Google id already exists",
+            ) from exc
+        row = require_event(conn, int(cursor.lastrowid))
+    return event_out(row)
+
+
+@app.put("/api/events/{event_id}", response_model=EventOut)
+def update_event(event_id: int, payload: EventIn) -> EventOut:
+    start_s, end_s, start_dt = canonical_event_times(payload)
+    rrule = validated_rrule(payload, start_dt)
+    with get_connection() as conn:
+        existing = require_event(conn, event_id)
+        require_member(conn, payload.member_id)
+        existing_values = {key: existing[key] for key in existing.keys()}
+    google_event_id = calendar_write_through.on_update(existing_values, payload)
+    updated_at = datetime.now().astimezone().isoformat(timespec="seconds")
+    calendar_id = payload.calendar_id or existing_values["calendar_id"] or "primary"
+    with get_connection() as conn:
+        require_event(conn, event_id)
+        require_member(conn, payload.member_id)
+        try:
+            conn.execute(
+                """
+                UPDATE events
+                SET google_event_id = ?, calendar_id = ?, member_id = ?, title = ?,
+                    description = ?, start_time = ?, end_time = ?, all_day = ?,
+                    rrule = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    google_event_id,
+                    calendar_id,
+                    payload.member_id,
+                    payload.title,
+                    payload.description,
+                    start_s,
+                    end_s,
+                    1 if payload.all_day else 0,
+                    rrule,
+                    updated_at,
+                    event_id,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="An event with that Google id already exists",
+            ) from exc
+        row = require_event(conn, event_id)
+    return event_out(row)
+
+
+@app.delete("/api/events/{event_id}", status_code=204)
+def delete_event(event_id: int) -> Response:
+    with get_connection() as conn:
+        existing = require_event(conn, event_id)
+        existing_values = {key: existing[key] for key in existing.keys()}
+    calendar_write_through.on_delete(existing_values)
+    with get_connection() as conn:
+        require_event(conn, event_id)
+        conn.execute("DELETE FROM events WHERE id = ?", (event_id,))
+    return Response(status_code=204)
 
 
 @app.get("/")

@@ -63,3 +63,43 @@ button {
 #keyboard-dock .hg-button:active {
   background: #99f6e4;
 }
+
+.touch-calendar {
+  min-height: 0;
+}
+
+.touch-calendar .fc {
+  height: 100%;
+  font-size: 1rem;
+}
+
+.touch-calendar .fc-timegrid-slot {
+  height: 3rem;
+}
+
+.touch-calendar .fc-event {
+  border: none;
+  border-radius: 0.65rem;
+  cursor: pointer;
+}
+
+.touch-calendar .fc-event-main {
+  padding: 0.15rem 0.35rem;
+  font-weight: 700;
+}
+
+.touch-calendar .fc-col-header-cell-cushion,
+.touch-calendar .fc-timegrid-slot-label-cushion,
+.touch-calendar .fc-timegrid-axis-cushion {
+  font-size: 1rem;
+  font-weight: 700;
+  color: #44403c;
+}
+
+.touch-calendar .fc-day-today {
+  background: #f0fdfa;
+}
+
+.touch-calendar .fc-timegrid-now-indicator-line {
+  border-color: #0f766e;
+}
