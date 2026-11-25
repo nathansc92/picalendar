@@ -74,7 +74,7 @@ button {
 }
 
 .touch-calendar .fc-timegrid-slot {
-  height: 3rem;
+  height: 48px;
 }
 
 .touch-calendar .fc-event {

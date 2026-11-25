@@ -295,6 +295,10 @@ document.addEventListener("alpine:init", () => {
     calendarView: "timeGridWeek",
     calendarLabel: "",
     hiddenMemberIds: [],
+    showMemberFilter: false,
+    showChoreFilter: false,
+    now: new Date(),
+    clockTimer: null,
     syncStatus: {
       online: true,
       last_synced_at: null,
@@ -342,11 +346,36 @@ document.addEventListener("alpine:init", () => {
     },
 
     todayLabel() {
-      return new Date().toLocaleDateString(undefined, {
+      return this.now.toLocaleDateString(undefined, {
         weekday: "long",
         month: "long",
         day: "numeric",
       });
+    },
+
+    clockLabel() {
+      return this.now.toLocaleTimeString(undefined, {
+        hour: "numeric",
+        minute: "2-digit",
+      });
+    },
+
+    memberFilterLabel() {
+      const hidden = this.hiddenMemberIds.length;
+      if (!hidden) return "Filter";
+      return hidden === 1 ? "Filter · 1 hidden" : `Filter · ${hidden} hidden`;
+    },
+
+    choreFilterLabel() {
+      if (this.choreFilter === "all") return "All";
+      if (this.choreFilter === "anyone") return "Anyone";
+      const member = this.members.find((item) => item.id === this.choreFilter);
+      return member ? member.name : "All";
+    },
+
+    setChoreFilter(value) {
+      this.choreFilter = value;
+      this.showChoreFilter = false;
     },
 
     init() {
@@ -361,6 +390,9 @@ document.addEventListener("alpine:init", () => {
         this.setupKeyboard();
         this.$nextTick(() => this.ensureCalendar());
       });
+      this.clockTimer = setInterval(() => {
+        this.now = new Date();
+      }, 1000);
       this.pollVersion();
       this.versionTimer = setInterval(() => this.pollVersion(), 60000);
       this.pollSync();
@@ -370,6 +402,7 @@ document.addEventListener("alpine:init", () => {
     },
 
     destroy() {
+      if (this.clockTimer) clearInterval(this.clockTimer);
       if (this.versionTimer) clearInterval(this.versionTimer);
       if (this.syncTimer) clearInterval(this.syncTimer);
       if (this.onFocusIn) document.removeEventListener("focusin", this.onFocusIn);
