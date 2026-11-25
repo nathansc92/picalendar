@@ -100,6 +100,18 @@ function minutesFromISO(value) {
   return hours * 60 + mins;
 }
 
+function calendarScrollTime(now = new Date()) {
+  const earliest = 6 * 60;
+  const latest = 19 * 60;
+  let minutes = now.getHours() * 60 + now.getMinutes() - 60;
+  if (minutes < earliest) minutes = earliest;
+  if (minutes > latest) minutes = latest;
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  const pad = (number) => String(number).padStart(2, "0");
+  return `${pad(hours)}:${pad(mins)}:00`;
+}
+
 function minutesLabel(minutes) {
   const normalized = ((minutes % 1440) + 1440) % 1440;
   let hours = Math.floor(normalized / 60);
@@ -1035,9 +1047,9 @@ document.addEventListener("alpine:init", () => {
         firstDay: 0,
         allDaySlot: true,
         nowIndicator: true,
-        slotDuration: "00:30:00",
-        snapDuration: "00:15:00",
-        scrollTime: "07:00:00",
+        slotDuration: "01:00:00",
+        snapDuration: "00:30:00",
+        scrollTime: calendarScrollTime(),
         eventMinHeight: 48,
         expandRows: false,
         dayHeaderFormat: { weekday: "short", month: "numeric", day: "numeric" },
