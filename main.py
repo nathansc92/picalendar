@@ -30,6 +30,8 @@ from database import (
     expand_events,
     get_connection,
     init_db,
+    move_ordered_row,
+    next_sort_order,
     normalize_rrule,
     parse_local_datetime,
     shift_date,
@@ -141,6 +143,52 @@ class ChoreOut(BaseModel):
     completed: bool
     completed_at: str | None
     created_at: str
+
+
+class ListIn(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+
+    @field_validator("name")
+    @classmethod
+    def strip_name(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Name is required")
+        return cleaned
+
+
+class ListOut(BaseModel):
+    id: int
+    name: str
+    sort_order: int
+    unchecked_count: int
+    item_count: int
+    created_at: str
+
+
+class ListItemIn(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+
+    @field_validator("title")
+    @classmethod
+    def strip_title(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Title is required")
+        return cleaned
+
+
+class ListItemOut(BaseModel):
+    id: int
+    list_id: int
+    title: str
+    checked: bool
+    sort_order: int
+    created_at: str
+
+
+class MoveIn(BaseModel):
+    direction: Literal["up", "down"]
 
 
 class AssetIn(BaseModel):
@@ -265,6 +313,14 @@ SELECT c.id, c.title, c.notes, c.family_member_id, c.due_date, c.completed,
        c.completed_at, c.created_at, m.name AS member_name, m.color AS member_color
 FROM chores c
 LEFT JOIN family_members m ON m.id = c.family_member_id
+"""
+
+LIST_SQL = """
+SELECT l.id, l.name, l.sort_order, l.created_at,
+       COALESCE(SUM(CASE WHEN i.checked = 0 THEN 1 ELSE 0 END), 0) AS unchecked_count,
+       COUNT(i.id) AS item_count
+FROM lists l
+LEFT JOIN list_items i ON i.list_id = l.id
 """
 
 TASK_SQL = """
@@ -410,6 +466,55 @@ def require_chore(conn: sqlite3.Connection, chore_id: int) -> sqlite3.Row:
     row = conn.execute(CHORE_SQL + " WHERE c.id = ?", (chore_id,)).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="Chore not found")
+    return row
+
+
+def list_out(row: sqlite3.Row) -> ListOut:
+    return ListOut(
+        id=row["id"],
+        name=row["name"],
+        sort_order=row["sort_order"],
+        unchecked_count=int(row["unchecked_count"]),
+        item_count=int(row["item_count"]),
+        created_at=row["created_at"],
+    )
+
+
+def list_item_out(row: sqlite3.Row) -> ListItemOut:
+    return ListItemOut(
+        id=row["id"],
+        list_id=row["list_id"],
+        title=row["title"],
+        checked=bool(row["checked"]),
+        sort_order=row["sort_order"],
+        created_at=row["created_at"],
+    )
+
+
+def require_list_row(conn: sqlite3.Connection, list_id: int) -> sqlite3.Row:
+    row = conn.execute("SELECT * FROM lists WHERE id = ?", (list_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="List not found")
+    return row
+
+
+def require_list(conn: sqlite3.Connection, list_id: int) -> sqlite3.Row:
+    row = conn.execute(
+        LIST_SQL + " WHERE l.id = ? GROUP BY l.id",
+        (list_id,),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="List not found")
+    return row
+
+
+def require_list_item(conn: sqlite3.Connection, item_id: int) -> sqlite3.Row:
+    row = conn.execute(
+        "SELECT * FROM list_items WHERE id = ?",
+        (item_id,),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="List item not found")
     return row
 
 
@@ -900,6 +1005,150 @@ def mark_task_done(task_id: int) -> MaintenanceTaskOut:
         )
         updated = require_task(conn, task_id)
     return task_out(updated, today)
+
+
+@app.get("/api/lists", response_model=list[ListOut])
+def list_lists() -> list[ListOut]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            LIST_SQL + " GROUP BY l.id ORDER BY l.sort_order ASC, l.id ASC"
+        ).fetchall()
+    return [list_out(row) for row in rows]
+
+
+@app.post("/api/lists", response_model=ListOut, status_code=201)
+def create_list(payload: ListIn) -> ListOut:
+    with get_connection() as conn:
+        cursor = conn.execute(
+            "INSERT INTO lists (name, sort_order) VALUES (?, ?)",
+            (payload.name, next_sort_order(conn, "lists")),
+        )
+        row = require_list(conn, int(cursor.lastrowid))
+    return list_out(row)
+
+
+@app.put("/api/lists/{list_id}", response_model=ListOut)
+def update_list(list_id: int, payload: ListIn) -> ListOut:
+    with get_connection() as conn:
+        require_list_row(conn, list_id)
+        conn.execute("UPDATE lists SET name = ? WHERE id = ?", (payload.name, list_id))
+        row = require_list(conn, list_id)
+    return list_out(row)
+
+
+@app.post("/api/lists/{list_id}/move", response_model=ListOut)
+def move_list(list_id: int, payload: MoveIn) -> ListOut:
+    with get_connection() as conn:
+        require_list_row(conn, list_id)
+        move_ordered_row(conn, "lists", list_id, payload.direction)
+        row = require_list(conn, list_id)
+    return list_out(row)
+
+
+@app.delete("/api/lists/{list_id}", status_code=204)
+def delete_list(list_id: int) -> Response:
+    with get_connection() as conn:
+        require_list_row(conn, list_id)
+        conn.execute("DELETE FROM lists WHERE id = ?", (list_id,))
+    return Response(status_code=204)
+
+
+@app.get("/api/lists/{list_id}/items", response_model=list[ListItemOut])
+def list_items(list_id: int) -> list[ListItemOut]:
+    with get_connection() as conn:
+        require_list_row(conn, list_id)
+        rows = conn.execute(
+            """
+            SELECT * FROM list_items
+            WHERE list_id = ?
+            ORDER BY sort_order ASC, id ASC
+            """,
+            (list_id,),
+        ).fetchall()
+    return [list_item_out(row) for row in rows]
+
+
+@app.post("/api/lists/{list_id}/items", response_model=ListItemOut, status_code=201)
+def create_list_item(list_id: int, payload: ListItemIn) -> ListItemOut:
+    with get_connection() as conn:
+        require_list_row(conn, list_id)
+        cursor = conn.execute(
+            """
+            INSERT INTO list_items (list_id, title, checked, sort_order)
+            VALUES (?, ?, 0, ?)
+            """,
+            (list_id, payload.title, next_sort_order(conn, "list_items", list_id)),
+        )
+        row = require_list_item(conn, int(cursor.lastrowid))
+    return list_item_out(row)
+
+
+@app.post("/api/lists/{list_id}/clear-checked", response_model=list[ListItemOut])
+def clear_checked_items(list_id: int) -> list[ListItemOut]:
+    """Delete checked items and leave the rest in their current order."""
+    with get_connection() as conn:
+        require_list_row(conn, list_id)
+        conn.execute(
+            "DELETE FROM list_items WHERE list_id = ? AND checked = 1",
+            (list_id,),
+        )
+        rows = conn.execute(
+            """
+            SELECT * FROM list_items
+            WHERE list_id = ?
+            ORDER BY sort_order ASC, id ASC
+            """,
+            (list_id,),
+        ).fetchall()
+    return [list_item_out(row) for row in rows]
+
+
+@app.put("/api/list-items/{item_id}", response_model=ListItemOut)
+def update_list_item(item_id: int, payload: ListItemIn) -> ListItemOut:
+    with get_connection() as conn:
+        require_list_item(conn, item_id)
+        conn.execute(
+            "UPDATE list_items SET title = ? WHERE id = ?",
+            (payload.title, item_id),
+        )
+        row = require_list_item(conn, item_id)
+    return list_item_out(row)
+
+
+@app.post("/api/list-items/{item_id}/toggle", response_model=ListItemOut)
+def toggle_list_item(item_id: int) -> ListItemOut:
+    with get_connection() as conn:
+        row = require_list_item(conn, item_id)
+        checked = 0 if row["checked"] else 1
+        conn.execute(
+            "UPDATE list_items SET checked = ? WHERE id = ?",
+            (checked, item_id),
+        )
+        updated = require_list_item(conn, item_id)
+    return list_item_out(updated)
+
+
+@app.post("/api/list-items/{item_id}/move", response_model=ListItemOut)
+def move_list_item(item_id: int, payload: MoveIn) -> ListItemOut:
+    with get_connection() as conn:
+        row = require_list_item(conn, item_id)
+        move_ordered_row(
+            conn,
+            "list_items",
+            item_id,
+            payload.direction,
+            int(row["list_id"]),
+        )
+        updated = require_list_item(conn, item_id)
+    return list_item_out(updated)
+
+
+@app.delete("/api/list-items/{item_id}", status_code=204)
+def delete_list_item(item_id: int) -> Response:
+    with get_connection() as conn:
+        require_list_item(conn, item_id)
+        conn.execute("DELETE FROM list_items WHERE id = ?", (item_id,))
+    return Response(status_code=204)
 
 
 @app.get("/api/events", response_model=list[EventOccurrenceOut])

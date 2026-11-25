@@ -281,6 +281,16 @@ document.addEventListener("alpine:init", () => {
     chores: [],
     assets: [],
     tasks: [],
+    lists: [],
+    editingLists: false,
+    editingItems: false,
+    listItems: [],
+    selectedListId: null,
+    newListName: "",
+    newItemTitle: "",
+    listRenameName: "",
+    editingItemId: null,
+    itemRenameTitle: "",
     choreFilter: "all",
     loading: false,
     error: "",
@@ -351,6 +361,14 @@ document.addEventListener("alpine:init", () => {
 
     get openChoreCount() {
       return this.filteredChores.filter((chore) => !chore.completed).length;
+    },
+
+    get selectedList() {
+      return this.lists.find((list) => list.id === this.selectedListId) || null;
+    },
+
+    get checkedItemCount() {
+      return this.listItems.filter((item) => item.checked).length;
     },
 
     get sortedTasks() {
@@ -644,11 +662,12 @@ document.addEventListener("alpine:init", () => {
     async refreshAll() {
       this.loading = true;
       try {
-        const [members, chores, assets, tasks] = await Promise.all([
+        const [members, chores, assets, tasks, lists] = await Promise.all([
           request("/api/family-members"),
           request("/api/chores"),
           request("/api/assets"),
           request("/api/maintenance-tasks"),
+          request("/api/lists"),
         ]);
         this.members = members;
         if (!this.memberColorReady) {
@@ -658,6 +677,8 @@ document.addEventListener("alpine:init", () => {
         this.chores = chores;
         this.assets = assets;
         this.tasks = tasks;
+        this.lists = lists;
+        await this.syncListSelection();
         this.error = "";
       } catch (error) {
         this.error = error.message || "Could not reach the server.";
@@ -728,6 +749,7 @@ document.addEventListener("alpine:init", () => {
       if (!this.keyboardOpen) return;
       const target = event.target;
       if (this.isInsideKeyboard(target) || this.isTextField(target)) return;
+      if (target.closest && target.closest("[data-keep-keyboard]")) return;
       this.closeKeyboard(false);
     },
 
@@ -1036,6 +1058,296 @@ document.addEventListener("alpine:init", () => {
         this.error = error.message;
       } finally {
         this.setBusy("task-save", false);
+      }
+    },
+
+    listCountLabel(list) {
+      if (!list.item_count) return "Empty";
+      if (!list.unchecked_count) return "All done";
+      if (list.unchecked_count === 1) return "1 left";
+      return `${list.unchecked_count} left`;
+    },
+
+    async syncListSelection() {
+      const stillThere = this.lists.some((list) => list.id === this.selectedListId);
+      if (!stillThere) {
+        this.selectedListId = this.lists.length ? this.lists[0].id : null;
+        this.editingItemId = null;
+        this.newItemTitle = "";
+        if (this.editingItems) {
+          const next = this.lists.find((list) => list.id === this.selectedListId);
+          this.listRenameName = next ? next.name : "";
+          if (!next) this.editingItems = false;
+        }
+      }
+      await this.loadListItems();
+    },
+
+    async refreshLists() {
+      const lists = await request("/api/lists");
+      this.lists = lists;
+      await this.syncListSelection();
+    },
+
+    async loadListItems() {
+      const listId = this.selectedListId;
+      if (!listId) {
+        this.listItems = [];
+        return;
+      }
+      const items = await request(`/api/lists/${listId}/items`);
+      if (this.selectedListId !== listId) return;
+      if (this.editingItemId && !items.some((item) => item.id === this.editingItemId)) {
+        this.editingItemId = null;
+      }
+      this.listItems = items;
+    },
+
+    async selectList(listId) {
+      if (listId === this.selectedListId) return;
+      if (this.editingItems) {
+        const saved = await this.saveListName();
+        if (!saved) return;
+      }
+      this.selectedListId = listId;
+      this.editingItemId = null;
+      this.newItemTitle = "";
+      this.error = "";
+      if (this.editingItems) {
+        const next = this.lists.find((list) => list.id === listId);
+        this.listRenameName = next ? next.name : "";
+      }
+      this.loadListItems().catch((error) => {
+        this.error = error.message;
+      });
+    },
+
+    async createList() {
+      const name = this.newListName.trim();
+      if (!name) {
+        this.error = "A list needs a name.";
+        return;
+      }
+      this.setBusy("list-add", true);
+      this.error = "";
+      try {
+        const created = await request("/api/lists", { method: "POST", body: { name } });
+        this.newListName = "";
+        this.selectedListId = created.id;
+        this.editingItemId = null;
+        if (this.editingItems) this.listRenameName = created.name;
+        if (this.kb && this.activeField && this.activeField.id === "new-list-name") {
+          this.kb.setInput("");
+        }
+        await this.refreshLists();
+      } catch (error) {
+        this.error = error.message;
+      } finally {
+        this.setBusy("list-add", false);
+      }
+    },
+
+    async toggleItemEditMode() {
+      if (!this.selectedList) return;
+      if (!this.editingItems) {
+        this.listRenameName = this.selectedList.name;
+        this.editingItems = true;
+        return;
+      }
+      const saved = await this.saveListName();
+      if (!saved) return;
+      this.editingItems = false;
+    },
+
+    async saveListName() {
+      if (this.listNameSave) return this.listNameSave;
+      this.listNameSave = this.persistListName();
+      try {
+        return await this.listNameSave;
+      } finally {
+        this.listNameSave = null;
+      }
+    },
+
+    async persistListName() {
+      const name = this.listRenameName.trim();
+      if (!this.selectedListId) return false;
+      if (!name) {
+        this.error = "A list needs a name.";
+        return false;
+      }
+      const current = this.lists.find((list) => list.id === this.selectedListId);
+      if (current && current.name === name) return true;
+      this.setBusy("list-rename", true);
+      this.error = "";
+      try {
+        await request(`/api/lists/${this.selectedListId}`, { method: "PUT", body: { name } });
+        if (current) current.name = name;
+        return true;
+      } catch (error) {
+        this.error = error.message;
+        return false;
+      } finally {
+        this.setBusy("list-rename", false);
+      }
+    },
+
+    async moveList(list, direction) {
+      const key = `list-move-${list.id}`;
+      if (this.isBusy(key)) return;
+      this.setBusy(key, true);
+      this.error = "";
+      try {
+        await request(`/api/lists/${list.id}/move`, { method: "POST", body: { direction } });
+        await this.refreshLists();
+      } catch (error) {
+        this.error = error.message;
+      } finally {
+        this.setBusy(key, false);
+      }
+    },
+
+    async addListItem() {
+      const title = this.newItemTitle.trim();
+      if (!this.selectedListId) return;
+      if (!title) {
+        this.error = "An item needs a name.";
+        return;
+      }
+      this.setBusy("item-add", true);
+      this.error = "";
+      try {
+        const created = await request(`/api/lists/${this.selectedListId}/items`, {
+          method: "POST",
+          body: { title },
+        });
+        if (this.selectedListId === created.list_id) this.listItems.push(created);
+        this.newItemTitle = "";
+        const list = this.lists.find((row) => row.id === created.list_id);
+        if (list) {
+          list.item_count += 1;
+          list.unchecked_count += 1;
+        }
+        if (this.kb && this.activeField && this.activeField.id === "new-item-title") {
+          this.kb.setInput("");
+        }
+        this.$nextTick(() => {
+          if (this.$refs.newItemTitle) this.$refs.newItemTitle.focus();
+        });
+      } catch (error) {
+        this.error = error.message;
+      } finally {
+        this.setBusy("item-add", false);
+      }
+    },
+
+    startEditItem(item) {
+      if (this.editingItemId === item.id) return;
+      this.editingItemId = item.id;
+      this.itemRenameTitle = item.title;
+      this.$nextTick(() => {
+        const field = document.getElementById(`edit-item-${item.id}`);
+        if (field) field.focus();
+      });
+    },
+
+    async saveItemTitle() {
+      const itemId = this.editingItemId;
+      if (!itemId || this.isBusy("item-rename")) return;
+      const title = this.itemRenameTitle.trim();
+      if (!title) {
+        this.error = "An item needs a name.";
+        return;
+      }
+      const current = this.listItems.find((item) => item.id === itemId);
+      if (current && current.title === title) {
+        this.editingItemId = null;
+        return;
+      }
+      this.setBusy("item-rename", true);
+      this.error = "";
+      try {
+        const updated = await request(`/api/list-items/${itemId}`, {
+          method: "PUT",
+          body: { title },
+        });
+        const index = this.listItems.findIndex((item) => item.id === updated.id);
+        if (index >= 0) this.listItems.splice(index, 1, updated);
+        if (this.editingItemId === itemId) this.editingItemId = null;
+        if (!this.isTextField(document.activeElement)) this.closeKeyboard(true);
+      } catch (error) {
+        this.error = error.message;
+      } finally {
+        this.setBusy("item-rename", false);
+      }
+    },
+
+    async toggleListItem(item) {
+      const key = `item-toggle-${item.id}`;
+      if (this.isBusy(key)) return;
+      this.setBusy(key, true);
+      this.error = "";
+      try {
+        const updated = await request(`/api/list-items/${item.id}/toggle`, { method: "POST" });
+        const index = this.listItems.findIndex((row) => row.id === item.id);
+        if (index >= 0) this.listItems.splice(index, 1, updated);
+        const list = this.lists.find((row) => row.id === item.list_id);
+        if (list) list.unchecked_count += updated.checked ? -1 : 1;
+      } catch (error) {
+        this.error = error.message;
+      } finally {
+        this.setBusy(key, false);
+      }
+    },
+
+    async moveListItem(item, direction) {
+      const key = `item-move-${item.id}`;
+      if (this.isBusy(key)) return;
+      this.setBusy(key, true);
+      this.error = "";
+      try {
+        await request(`/api/list-items/${item.id}/move`, { method: "POST", body: { direction } });
+        await this.loadListItems();
+      } catch (error) {
+        this.error = error.message;
+      } finally {
+        this.setBusy(key, false);
+      }
+    },
+
+    async deleteListItem(item) {
+      const key = `item-delete-${item.id}`;
+      if (this.isBusy(key)) return;
+      this.setBusy(key, true);
+      this.error = "";
+      try {
+        await request(`/api/list-items/${item.id}`, { method: "DELETE" });
+        this.listItems = this.listItems.filter((row) => row.id !== item.id);
+        if (this.editingItemId === item.id) this.editingItemId = null;
+        const list = this.lists.find((row) => row.id === item.list_id);
+        if (list) {
+          list.item_count = Math.max(0, list.item_count - 1);
+          if (!item.checked) list.unchecked_count = Math.max(0, list.unchecked_count - 1);
+        }
+      } catch (error) {
+        this.error = error.message;
+      } finally {
+        this.setBusy(key, false);
+      }
+    },
+
+    async clearCheckedItems() {
+      if (!this.selectedListId || !this.checkedItemCount || this.isBusy("clear-checked")) return;
+      this.setBusy("clear-checked", true);
+      this.error = "";
+      try {
+        this.editingItemId = null;
+        await request(`/api/lists/${this.selectedListId}/clear-checked`, { method: "POST" });
+        await this.refreshLists();
+      } catch (error) {
+        this.error = error.message;
+      } finally {
+        this.setBusy("clear-checked", false);
       }
     },
 
@@ -1387,6 +1699,7 @@ document.addEventListener("alpine:init", () => {
         chore: `/api/chores/${pending.id}`,
         asset: `/api/assets/${pending.id}`,
         task: `/api/maintenance-tasks/${pending.id}`,
+        list: `/api/lists/${pending.id}`,
       };
       this.setBusy("delete", true);
       try {

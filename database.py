@@ -3,6 +3,7 @@
 Phase 1 tables cover family members, chores, assets, and maintenance.
 Phase 2 adds the local calendar cache and expands repeating rows on read.
 Phase 3 stores each person's Google calendar id, token path, and sync tokens.
+Checklists use lists and list_items. They are not assigned to a person.
 """
 
 from __future__ import annotations
@@ -175,6 +176,34 @@ def init_db() -> None:
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_events_start ON events(start_time)"
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS lists (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                sort_order INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now'))
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS list_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                list_id INTEGER NOT NULL REFERENCES lists(id) ON DELETE CASCADE,
+                title TEXT NOT NULL,
+                checked INTEGER NOT NULL DEFAULT 0 CHECK (checked IN (0, 1)),
+                sort_order INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now'))
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_lists_order ON lists(sort_order)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_list_items_order ON list_items(list_id, sort_order)"
         )
         seed_if_empty(conn)
         seed_events_if_empty(conn)
@@ -412,6 +441,83 @@ def seed_events_if_empty(conn: sqlite3.Connection) -> None:
             ),
         ),
     )
+
+
+_ORDERED_TABLES = ("lists", "list_items")
+
+
+def next_sort_order(
+    conn: sqlite3.Connection,
+    table: str,
+    list_id: int | None = None,
+) -> int:
+    """Next sort_order for a new list, or for a new item on one list."""
+    if table not in _ORDERED_TABLES:
+        raise ValueError(f"Unsupported table: {table}")
+    if table == "lists":
+        row = conn.execute(
+            "SELECT COALESCE(MAX(sort_order), 0) + 1 AS n FROM lists"
+        ).fetchone()
+    else:
+        row = conn.execute(
+            """
+            SELECT COALESCE(MAX(sort_order), 0) + 1 AS n
+            FROM list_items
+            WHERE list_id = ?
+            """,
+            (list_id,),
+        ).fetchone()
+    return int(row["n"])
+
+
+def move_ordered_row(
+    conn: sqlite3.Connection,
+    table: str,
+    row_id: int,
+    direction: str,
+    list_id: int | None = None,
+) -> None:
+    """Swap a row with its neighbor and rewrite sort_order as 1..n.
+
+    Moving the first row up or the last row down leaves the order unchanged.
+    Checked items stay in place because this never sorts on the checked flag.
+    """
+    if table not in _ORDERED_TABLES:
+        raise ValueError(f"Unsupported table: {table}")
+    if direction not in ("up", "down"):
+        raise ValueError(f"Unsupported direction: {direction}")
+    if table == "lists":
+        rows = conn.execute(
+            "SELECT id FROM lists ORDER BY sort_order ASC, id ASC"
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT id FROM list_items
+            WHERE list_id = ?
+            ORDER BY sort_order ASC, id ASC
+            """,
+            (list_id,),
+        ).fetchall()
+    ids = [int(row["id"]) for row in rows]
+    try:
+        index = ids.index(row_id)
+    except ValueError as exc:
+        raise KeyError(row_id) from exc
+    if direction == "up":
+        if index == 0:
+            return
+        swap_with = index - 1
+    else:
+        if index == len(ids) - 1:
+            return
+        swap_with = index + 1
+    ids[index], ids[swap_with] = ids[swap_with], ids[index]
+    for order, item_id in enumerate(ids, start=1):
+        conn.execute(
+            f"UPDATE {table} SET sort_order = ? WHERE id = ?",
+            (order, item_id),
+        )
 
 
 def parse_local_datetime(value: str) -> datetime:

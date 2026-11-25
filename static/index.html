@@ -23,6 +23,9 @@
         <button type="button" @click="tab = 'maintenance'"
           class="min-h-12 rounded-2xl px-4 text-base font-bold"
           :class="tab === 'maintenance' ? 'bg-white text-stone-900' : 'bg-stone-800 text-white'">Home Maintenance</button>
+        <button type="button" @click="tab = 'lists'"
+          class="min-h-12 rounded-2xl px-4 text-base font-bold"
+          :class="tab === 'lists' ? 'bg-white text-stone-900' : 'bg-stone-800 text-white'">Lists</button>
       </nav>
       <div class="flex shrink-0 items-center gap-3">
         <p class="text-xl font-bold tabular-nums" x-text="clockLabel()"></p>
@@ -245,6 +248,134 @@
         </ul>
 
         
+      </section>
+
+      <section x-show="tab === 'lists'" class="flex h-full min-h-0 flex-col px-4 py-2" :class="keyboardOpen && 'pb-[380px]'">
+        <div x-show="error" role="alert" class="mb-2 flex items-center justify-between gap-4 rounded-2xl bg-red-100 px-5 py-3 text-lg text-red-900">
+          <span x-text="error"></span>
+          <button type="button" @click="error = ''" class="min-h-12 rounded-xl bg-red-700 px-4 font-bold text-white">Dismiss</button>
+        </div>
+        <div class="flex min-h-0 flex-1 gap-3">
+          <aside class="flex w-96 shrink-0 flex-col rounded-3xl bg-white shadow-sm ring-1 ring-stone-200">
+            <div class="flex items-center justify-between gap-2 px-3 pt-3">
+              <h2 class="text-2xl font-extrabold">Lists</h2>
+              <button type="button" @click="editingLists = !editingLists"
+                class="min-h-12 rounded-2xl px-4 text-base font-bold"
+                :class="editingLists ? 'bg-stone-900 text-white' : 'bg-white text-stone-900 ring-1 ring-stone-300'"
+                x-text="editingLists ? 'Done' : 'Edit'"></button>
+            </div>
+            <div class="min-h-0 flex-1 overflow-y-auto p-3">
+              <p x-show="loading && lists.length === 0" class="px-2 py-8 text-center text-lg text-stone-500">Loading…</p>
+              <p x-show="!loading && lists.length === 0" class="px-2 py-8 text-center text-lg text-stone-500">No lists yet.</p>
+              <ul>
+                <template x-for="(list, index) in lists" :key="list.id">
+                  <li class="mb-2 flex items-center gap-1 rounded-2xl p-2" :class="selectedListId === list.id ? 'bg-stone-900 text-white' : 'bg-stone-100 text-stone-900'">
+                    <button type="button" @click="selectList(list.id)"
+                      class="flex min-h-12 min-w-0 flex-1 items-center justify-between gap-2 rounded-xl px-2 text-left text-lg font-bold">
+                      <span class="truncate" x-text="list.name"></span>
+                      <span x-show="!editingLists" class="shrink-0 text-base font-semibold" :class="selectedListId === list.id ? 'text-stone-300' : 'text-stone-500'" x-text="listCountLabel(list)"></span>
+                    </button>
+                    <div x-show="editingLists" class="flex shrink-0 items-center gap-1">
+                      <button type="button" @click="moveList(list, 'up')" :disabled="index === 0 || isBusy('list-move-' + list.id)"
+                        aria-label="Move list up"
+                        class="flex h-12 w-12 items-center justify-center rounded-xl bg-white text-stone-900 ring-1 ring-stone-300 disabled:bg-stone-600 disabled:text-stone-300 disabled:opacity-100 disabled:ring-0">
+                        <svg viewBox="0 0 24 24" class="h-6 w-6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 14l6-6 6 6"/></svg>
+                      </button>
+                      <button type="button" @click="moveList(list, 'down')" :disabled="index === lists.length - 1 || isBusy('list-move-' + list.id)"
+                        aria-label="Move list down"
+                        class="flex h-12 w-12 items-center justify-center rounded-xl bg-white text-stone-900 ring-1 ring-stone-300 disabled:bg-stone-600 disabled:text-stone-300 disabled:opacity-100 disabled:ring-0">
+                        <svg viewBox="0 0 24 24" class="h-6 w-6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 10l6 6 6-6"/></svg>
+                      </button>
+                      <button type="button" @click="askDelete('list', list)"
+                        aria-label="Delete list"
+                        class="flex h-12 w-12 items-center justify-center rounded-xl bg-rose-600 text-white">
+                        <svg viewBox="0 0 24 24" class="h-6 w-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/><path d="M7 7l1 13h8l1-13"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
+                      </button>
+                    </div>
+                  </li>
+                </template>
+              </ul>
+            </div>
+            <form class="border-t border-stone-200 p-3" data-keep-keyboard @submit.prevent="createList()">
+              <label class="sr-only" for="new-list-name">New list name</label>
+              <input id="new-list-name" x-model="newListName" type="text" inputmode="none" data-keyboard="text" maxlength="80" placeholder="New list"
+                class="w-full rounded-2xl border-2 border-stone-300 px-4 text-xl">
+              <button type="submit" :disabled="isBusy('list-add')"
+                class="mt-2 min-h-12 w-full rounded-2xl bg-teal-700 px-4 text-base font-bold text-white active:bg-teal-800 disabled:opacity-60">New List</button>
+            </form>
+          </aside>
+
+          <div class="flex min-w-0 flex-1 flex-col rounded-3xl bg-white shadow-sm ring-1 ring-stone-200">
+            <div x-show="!selectedList" class="flex flex-1 items-center justify-center px-6 text-center text-2xl text-stone-500">
+              Create a list to get started.
+            </div>
+            <template x-if="selectedList">
+              <div class="flex min-h-0 flex-1 flex-col">
+                <div class="flex flex-wrap items-center gap-2 border-b border-stone-200 p-3">
+                  <h2 class="min-w-0 flex-1 truncate text-2xl font-extrabold" x-show="!editingItems" x-text="selectedList.name"></h2>
+                  <form x-show="editingItems" class="min-w-0 flex-1" data-keep-keyboard @submit.prevent="saveListName()">
+                    <label class="sr-only" for="rename-list">List name</label>
+                    <input id="rename-list" x-ref="listRename" x-model="listRenameName" type="text" inputmode="none" data-keyboard="text" maxlength="80"
+                      class="w-full rounded-2xl border-2 border-stone-300 px-4 text-xl" @focusout="saveListName()">
+                  </form>
+                  <button type="button" @click="clearCheckedItems()" :disabled="!checkedItemCount || isBusy('clear-checked')"
+                    class="min-h-12 rounded-xl bg-stone-200 px-4 text-lg font-bold disabled:opacity-40">Clear checked</button>
+                  <button type="button" @click="toggleItemEditMode()"
+                    class="min-h-12 rounded-xl px-4 text-lg font-bold"
+                    :class="editingItems ? 'bg-stone-900 text-white' : 'bg-white text-stone-900 ring-1 ring-stone-300'"
+                    x-text="editingItems ? 'Done' : 'Edit'"></button>
+                </div>
+                <div class="min-h-0 flex-1 overflow-y-auto p-3">
+                  <p x-show="listItems.length === 0" class="rounded-3xl bg-stone-50 px-6 py-16 text-center text-2xl text-stone-500">Nothing on this list yet.</p>
+                  <ul class="space-y-3">
+                    <template x-for="(item, index) in listItems" :key="item.id">
+                      <li class="flex items-center gap-2 rounded-3xl bg-stone-50 p-3 ring-1 ring-stone-200" :class="item.checked && 'opacity-70'">
+                        <button type="button"
+                          class="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl border-4 text-3xl font-bold"
+                          :class="item.checked ? 'border-teal-700 bg-teal-700 text-white' : 'border-stone-300 bg-white text-transparent'"
+                          :aria-pressed="item.checked ? 'true' : 'false'"
+                          :aria-label="item.checked ? 'Uncheck item' : 'Check item'"
+                          @click="toggleListItem(item)">✓</button>
+                        <button type="button" x-show="editingItemId !== item.id" @click="startEditItem(item)"
+                          class="min-h-12 min-w-0 flex-1 truncate rounded-xl px-2 text-left text-2xl font-bold"
+                          :class="item.checked && 'line-through'" x-text="item.title"></button>
+                        <form x-show="editingItemId === item.id" class="min-w-0 flex-1" data-keep-keyboard @submit.prevent="saveItemTitle()">
+                          <label class="sr-only" :for="'edit-item-' + item.id">Item name</label>
+                          <input :id="'edit-item-' + item.id" x-model="itemRenameTitle" type="text" inputmode="none" data-keyboard="text" maxlength="200"
+                            class="w-full rounded-2xl border-2 border-stone-300 px-4 text-xl" @focusout="saveItemTitle()">
+                        </form>
+                        <div x-show="editingItems" class="flex shrink-0 items-center gap-1">
+                          <button type="button" @click="moveListItem(item, 'up')" :disabled="index === 0 || isBusy('item-move-' + item.id)"
+                            aria-label="Move item up"
+                            class="flex h-12 w-12 items-center justify-center rounded-xl bg-white text-stone-900 ring-1 ring-stone-300 disabled:bg-stone-300 disabled:text-stone-400 disabled:opacity-100 disabled:ring-0">
+                            <svg viewBox="0 0 24 24" class="h-6 w-6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 14l6-6 6 6"/></svg>
+                          </button>
+                          <button type="button" @click="moveListItem(item, 'down')" :disabled="index === listItems.length - 1 || isBusy('item-move-' + item.id)"
+                            aria-label="Move item down"
+                            class="flex h-12 w-12 items-center justify-center rounded-xl bg-white text-stone-900 ring-1 ring-stone-300 disabled:bg-stone-300 disabled:text-stone-400 disabled:opacity-100 disabled:ring-0">
+                            <svg viewBox="0 0 24 24" class="h-6 w-6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 10l6 6 6-6"/></svg>
+                          </button>
+                          <button type="button" @click="deleteListItem(item)" :disabled="isBusy('item-delete-' + item.id)"
+                            aria-label="Delete item"
+                            class="flex h-12 w-12 items-center justify-center rounded-xl bg-rose-600 text-white disabled:opacity-60">
+                            <svg viewBox="0 0 24 24" class="h-6 w-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/><path d="M7 7l1 13h8l1-13"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
+                          </button>
+                        </div>
+                      </li>
+                    </template>
+                  </ul>
+                </div>
+                <form class="flex flex-wrap items-center gap-2 border-t border-stone-200 p-3" data-keep-keyboard @submit.prevent="addListItem()">
+                  <label class="sr-only" for="new-item-title">New item</label>
+                  <input id="new-item-title" x-ref="newItemTitle" x-model="newItemTitle" type="text" inputmode="none" data-keyboard="text" maxlength="200" placeholder="Add an item"
+                    class="min-w-0 flex-1 rounded-2xl border-2 border-stone-300 px-4 text-xl">
+                  <button type="submit" :disabled="isBusy('item-add')"
+                    class="min-h-12 rounded-2xl bg-teal-700 px-6 text-lg font-bold text-white active:bg-teal-800 disabled:opacity-60">Add</button>
+                </form>
+              </div>
+            </template>
+          </div>
+        </div>
       </section>
     </main>
 
@@ -523,6 +654,7 @@
         <h3 class="text-3xl font-extrabold">Delete this?</h3>
         <p class="mt-4 text-xl text-stone-700" x-text="pendingDelete ? pendingDelete.name : ''"></p>
         <p class="mt-2 text-lg text-stone-500" x-show="pendingDelete && pendingDelete.kind === 'asset'">Deleting an asset also removes its maintenance tasks.</p>
+        <p class="mt-2 text-lg text-stone-500" x-show="pendingDelete && pendingDelete.kind === 'list'">Deleting a list also removes its items.</p>
         <div class="mt-8 flex justify-end gap-3">
           <button type="button" @click="closeDeleteModal()" class="min-h-14 rounded-2xl bg-stone-200 px-6 text-xl font-bold">Cancel</button>
           <button type="button" @click="confirmDelete()" :disabled="isBusy('delete')"

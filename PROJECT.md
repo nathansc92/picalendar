@@ -3,10 +3,11 @@
 ## 1. Project Overview
 A local, touch-friendly family hub web application designed to run 24/7 in **Chromium Kiosk mode** (`--kiosk`) on a Raspberry Pi connected to a 15-inch touchscreen.
 
-The app unifies three core household workflows into a single full-screen interface:
+The app unifies four core household workflows into a single full-screen interface:
 1. **Two-Way Multi-Account Google Calendar** (Single Day, 3-Day, and 1-Week views with per-person color chips)
 2. **Family Chore List** (Daily/recurring task tracking)
 3. **Home Assets & Preventative Maintenance (PM)** (Upcoming and overdue maintenance tracker)
+4. **Checklists** (Shared lists such as groceries or todos, not assigned to a person)
 
 ---
 
@@ -45,7 +46,7 @@ family-dashboard/
 ├── credentials.json        # (Git-ignored) Google Cloud OAuth client secrets
 ├── family_hub.db           # (Git-ignored) Local SQLite database
 └── static/
-    ├── index.html          # Main 3-tab Kiosk UI & modals
+    ├── index.html          # Main 4-tab Kiosk UI & modals
     ├── app.js              # Alpine.js state management, API client, version poller, and virtual keyboard controller
     └── styles.css          # Custom FullCalendar touch overrides & keyboard styling
 ```
@@ -97,6 +98,20 @@ family-dashboard/
 * `last_done_date` TEXT (YYYY-MM-DD)
 * `next_due_date` TEXT NOT NULL (YYYY-MM-DD)
 
+### `lists` (Shared checklists, not assigned to a person)
+* `id` INTEGER PRIMARY KEY AUTOINCREMENT
+* `name` TEXT NOT NULL
+* `sort_order` INTEGER NOT NULL
+* `created_at` TEXT
+
+### `list_items`
+* `id` INTEGER PRIMARY KEY AUTOINCREMENT
+* `list_id` INTEGER NOT NULL REFERENCES `lists(id)` ON DELETE CASCADE
+* `title` TEXT NOT NULL
+* `checked` BOOLEAN DEFAULT 0
+* `sort_order` INTEGER NOT NULL (order within that list; checking an item does not move it)
+* `created_at` TEXT
+
 ---
 
 ## 6. Feature Specifications
@@ -125,6 +140,14 @@ family-dashboard/
 * **One-Tap Completion:** Tapping **"Mark Done"** sets `last_done_date = today` and recalculates `next_due_date = today + interval_days`.
 * **Assets Management:** Sub-view or modal to add new `assets` and attach recurring `maintenance_tasks`.
 
+### Tab 4: Lists
+* Header button **Lists**, alongside Calendar, Chores, and Home Maintenance.
+* Two panes: list names on the left, the selected list's items on the right. Lists are household-wide and have no family-member field.
+* Each sidebar row shows how many items are still unchecked. **New List** sits at the bottom of that column. **Edit** above the lists reveals up, down, and delete icons beside each name; it switches to **Done** and hides those icons again. Deleting a list still asks for confirmation.
+* Items have a large checkbox. Checked items stay in place with a strikethrough. **Clear checked** deletes every checked item on the open list and leaves the rest in order. **Edit** beside that button reveals up, down, and delete icons on each item, and turns the list name into a text field. It switches to **Done** and hides those icons again.
+* Tap an item's text at any time to rename it. Deleting a whole list still asks for confirmation, from the list's trash icon.
+* Names use the on-screen keyboard.
+
 ---
 
 ## 7. Raspberry Pi Deployment & OAuth Notes
@@ -138,7 +161,7 @@ family-dashboard/
 ---
 
 ## 8. Phased Implementation Plan
-* **Phase 1 (Core App & Local Tabs):** Set up FastAPI, SQLite WAL database, `family_members` seed data, `/api/version` auto-reload poller, 3-tab Alpine.js/Tailwind shell, `simple-keyboard` integration, and full CRUD for Chores and Home Maintenance.
+* **Phase 1 (Core App & Local Tabs):** Set up FastAPI, SQLite WAL database, `family_members` seed data, `/api/version` auto-reload poller, Alpine.js/Tailwind shell, `simple-keyboard` integration, and full CRUD for Chores, Home Maintenance, and Lists.
 * **Phase 2 (Calendar UI & Local CRUD):** Integrate FullCalendar with 1-Day, 3-Day, and 1-Week views, per-person color chips, `rrule` expansion, and touch create/edit/delete modals backed by SQLite.
 * **Phase 3 (Google Calendar OAuth & Sync):** Connect `google_calendar.py` for multi-account `token.json` refresh, write-through mutations, offline status badge, and 5-minute background `syncToken` polling.
 * **Phase 4 (Pi Kiosk Deployment):** Add `systemd` service unit file, Chromium `--kiosk` autostart script, and `wlr-randr` overnight display schedule.

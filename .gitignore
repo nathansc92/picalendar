@@ -225,3 +225,4 @@ __marimo__/
 # Google OAuth client secrets and per-account refresh tokens
 credentials.json
 tokens/
+planning docs/
