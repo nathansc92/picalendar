@@ -101,9 +101,9 @@ function minutesFromISO(value) {
 }
 
 function calendarScrollTime(now = new Date()) {
-  const earliest = 6 * 60;
+  const earliest = 5 * 60;
   const latest = 19 * 60;
-  let minutes = now.getHours() * 60 + now.getMinutes() - 60;
+  let minutes = now.getHours() * 60 + now.getMinutes() - 240;
   if (minutes < earliest) minutes = earliest;
   if (minutes > latest) minutes = latest;
   const hours = Math.floor(minutes / 60);
@@ -324,6 +324,11 @@ document.addEventListener("alpine:init", () => {
     settingsError: "",
     settingsMessage: "",
     unlinkArmedId: null,
+    removeArmedId: null,
+    memberColors: ["#2563EB", "#DB2777", "#059669", "#F59E0B", "#8B5CF6", "#DC2626", "#0891B2", "#78716C"],
+    newMemberName: "",
+    newMemberColor: "#2563EB",
+    memberColorReady: false,
 
     get calendarOffline() {
       return this.syncStatus.loaded && this.syncStatus.linked_count > 0 && this.syncStatus.online === false;
@@ -496,6 +501,7 @@ document.addEventListener("alpine:init", () => {
       this.settingsError = "";
       this.settingsMessage = "";
       this.unlinkArmedId = null;
+      this.removeArmedId = null;
       this.showSettings = true;
       this.pollSync();
     },
@@ -503,7 +509,64 @@ document.addEventListener("alpine:init", () => {
     closeSettings() {
       this.showSettings = false;
       this.unlinkArmedId = null;
+      this.removeArmedId = null;
       this.closeKeyboard(true);
+    },
+
+    nextMemberColor() {
+      const used = new Set(this.members.map((member) => (member.color || "").toUpperCase()));
+      return this.memberColors.find((color) => !used.has(color.toUpperCase())) || this.memberColors[0];
+    },
+
+    async addMember() {
+      const name = this.newMemberName.trim();
+      this.settingsError = "";
+      this.settingsMessage = "";
+      if (!name) {
+        this.settingsError = "Name is required.";
+        return;
+      }
+      this.setBusy("add-member", true);
+      try {
+        const created = await request("/api/family-members", {
+          method: "POST",
+          body: { name, color: this.newMemberColor },
+        });
+        this.newMemberName = "";
+        this.settingsMessage = `${created.name} was added.`;
+        await this.refreshAll();
+        this.newMemberColor = this.nextMemberColor();
+        if (this.calendar) this.calendar.refetchEvents();
+      } catch (error) {
+        this.settingsError = error.message;
+      } finally {
+        this.setBusy("add-member", false);
+      }
+    },
+
+    async removeMember(member) {
+      if (this.removeArmedId !== member.id) {
+        this.removeArmedId = member.id;
+        this.unlinkArmedId = null;
+        return;
+      }
+      this.setBusy(`remove-${member.id}`, true);
+      this.settingsError = "";
+      try {
+        await request(`/api/family-members/${member.id}`, { method: "DELETE" });
+        this.removeArmedId = null;
+        this.hiddenMemberIds = this.hiddenMemberIds.filter((id) => id !== member.id);
+        if (this.choreFilter === member.id) this.choreFilter = "all";
+        this.settingsMessage = `${member.name} was removed.`;
+        await this.refreshAll();
+        await this.pollSync();
+        if (this.calendar) this.calendar.refetchEvents();
+      } catch (error) {
+        this.settingsError = error.message;
+        this.removeArmedId = null;
+      } finally {
+        this.setBusy(`remove-${member.id}`, false);
+      }
     },
 
     async saveCalendarId(member) {
@@ -544,6 +607,7 @@ document.addEventListener("alpine:init", () => {
     async unlinkAccount(member) {
       if (this.unlinkArmedId !== member.id) {
         this.unlinkArmedId = member.id;
+        this.removeArmedId = null;
         return;
       }
       this.setBusy(`unlink-${member.id}`, true);
@@ -587,6 +651,10 @@ document.addEventListener("alpine:init", () => {
           request("/api/maintenance-tasks"),
         ]);
         this.members = members;
+        if (!this.memberColorReady) {
+          this.newMemberColor = this.nextMemberColor();
+          this.memberColorReady = true;
+        }
         this.chores = chores;
         this.assets = assets;
         this.tasks = tasks;
@@ -1068,7 +1136,7 @@ document.addEventListener("alpine:init", () => {
           request(`/api/events?${params.toString()}`)
             .then((rows) => {
               const visible = rows.filter(
-                (row) => row.member_id == null || this.isMemberVisible(row.member_id),
+                (row) => row.member_id != null && this.isMemberVisible(row.member_id),
               );
               this.error = "";
               success(visible.map((row) => this.toCalendarEvent(row)));
@@ -1119,6 +1187,9 @@ document.addEventListener("alpine:init", () => {
       this.eventDeleteArmed = false;
       this.eventError = "";
       this.eventForm = existing ? formFromEvent(existing) : blankEvent(date, allDay);
+      if (!existing && !this.eventForm.member_id && this.members.length) {
+        this.eventForm.member_id = String(this.members[0].id);
+      }
       this.showEventModal = true;
       this.$nextTick(() => this.$refs.eventTitle && this.$refs.eventTitle.focus());
     },
@@ -1248,6 +1319,10 @@ document.addEventListener("alpine:init", () => {
       }
       if (!this.eventForm.title.trim()) {
         this.eventError = "An event needs a title.";
+        return;
+      }
+      if (!this.eventForm.member_id) {
+        this.eventError = "Choose who this event is for.";
         return;
       }
       if (!this.eventForm.all_day) {

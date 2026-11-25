@@ -208,7 +208,7 @@ class MaintenanceTaskOut(BaseModel):
 class EventIn(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     description: str = Field(default="", max_length=4000)
-    member_id: int | None = None
+    member_id: int
     calendar_id: str | None = Field(default=None, max_length=200)
     start_time: str = Field(min_length=8, max_length=40)
     end_time: str = Field(min_length=8, max_length=40)
@@ -420,6 +420,23 @@ def require_asset_row(conn: sqlite3.Connection, asset_id: int) -> sqlite3.Row:
     return row
 
 
+def require_unique_member_name(
+    conn: sqlite3.Connection, name: str, exclude_id: int | None = None
+) -> None:
+    row = conn.execute(
+        """
+        SELECT name FROM family_members
+        WHERE name = ? COLLATE NOCASE AND id != ?
+        """,
+        (name, -1 if exclude_id is None else exclude_id),
+    ).fetchone()
+    if row is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"A person named {row['name']} already exists.",
+        )
+
+
 def require_member_row(conn: sqlite3.Connection, member_id: int) -> sqlite3.Row:
     row = conn.execute(
         "SELECT * FROM family_members WHERE id = ?",
@@ -577,6 +594,7 @@ def list_members() -> list[FamilyMemberOut]:
 @app.post("/api/family-members", response_model=FamilyMemberOut, status_code=201)
 def create_member(payload: FamilyMemberIn) -> FamilyMemberOut:
     with get_connection() as conn:
+        require_unique_member_name(conn, payload.name)
         cursor = conn.execute(
             "INSERT INTO family_members (name, color) VALUES (?, ?)",
             (payload.name, payload.color),
@@ -608,6 +626,7 @@ def update_member_calendar(member_id: int, payload: MemberCalendarIn) -> FamilyM
 def update_member(member_id: int, payload: FamilyMemberIn) -> FamilyMemberOut:
     with get_connection() as conn:
         require_member_row(conn, member_id)
+        require_unique_member_name(conn, payload.name, exclude_id=member_id)
         conn.execute(
             "UPDATE family_members SET name = ?, color = ? WHERE id = ?",
             (payload.name, payload.color, member_id),
@@ -622,6 +641,7 @@ def delete_member(member_id: int) -> Response:
         require_member_row(conn, member_id)
     google_calendar.unlink_member(member_id)
     with get_connection() as conn:
+        conn.execute("DELETE FROM events WHERE member_id = ?", (member_id,))
         conn.execute("DELETE FROM family_members WHERE id = ?", (member_id,))
     return Response(status_code=204)
 

@@ -364,9 +364,6 @@
 
         <p class="mt-5 text-lg font-bold">Who</p>
         <div class="mt-2 flex flex-wrap gap-2" role="group" aria-label="Assign family member">
-          <button type="button" @click="eventForm.member_id = ''"
-            class="min-h-12 rounded-full px-4 text-lg font-bold"
-            :class="eventForm.member_id === '' ? 'bg-stone-900 text-white' : 'bg-stone-200 text-stone-800'">Anyone</button>
           <template x-for="member in members" :key="'event-' + member.id">
             <button type="button" @click="eventForm.member_id = String(member.id)"
               class="inline-flex min-h-12 items-center gap-2 rounded-full px-4 text-lg font-bold text-white"
@@ -461,6 +458,27 @@
           Put the Google OAuth client file at credentials.json beside main.py. Register the redirect URI below in Google Cloud, and sign in through localhost.
         </p>
         <p class="mt-3 text-lg text-stone-600">Redirect URI <span class="font-bold" x-text="oauthRedirectLabel()"></span></p>
+        <form class="mt-6 rounded-3xl bg-stone-50 p-4 ring-1 ring-stone-200" @submit.prevent="addMember()">
+          <p class="text-2xl font-bold">Add a person</p>
+          <label class="mt-3 block text-lg font-bold" for="new-member-name">Name</label>
+          <input id="new-member-name" x-model="newMemberName" type="text" inputmode="none" maxlength="80"
+            autocomplete="off" placeholder="Name"
+            class="mt-2 w-full rounded-2xl border-2 border-stone-300 px-4 text-xl">
+          <p class="mt-3 text-lg font-bold" id="new-member-color-label">Color</p>
+          <div class="mt-2 flex flex-wrap gap-2" role="group" aria-labelledby="new-member-color-label">
+            <template x-for="color in memberColors" :key="color">
+              <button type="button" @click="newMemberColor = color"
+                class="min-h-12 min-w-12 rounded-full"
+                :class="newMemberColor.toUpperCase() === color.toUpperCase() ? 'ring-4 ring-stone-900' : 'ring-2 ring-white'"
+                :style="`background-color: ${color}`"
+                :aria-label="color"
+                :aria-pressed="newMemberColor.toUpperCase() === color.toUpperCase() ? 'true' : 'false'"></button>
+            </template>
+          </div>
+          <button type="submit" :disabled="isBusy('add-member')"
+            class="mt-4 min-h-12 rounded-2xl bg-teal-700 px-6 text-lg font-bold text-white disabled:opacity-60">Add</button>
+        </form>
+        <p class="mt-4 text-lg text-stone-600">Removing a person unlinks their Google account and removes their events from this calendar. Events stay on Google. Their chores stay, unassigned.</p>
         <ul class="mt-6 space-y-4">
           <template x-for="member in members" :key="'acct-' + member.id">
             <li class="rounded-3xl bg-stone-50 p-4 ring-1 ring-stone-200">
@@ -484,6 +502,9 @@
                 <button type="button" x-show="member.linked" @click="unlinkAccount(member)" :disabled="isBusy('unlink-' + member.id)"
                   class="min-h-12 rounded-2xl bg-rose-600 px-4 text-lg font-bold text-white disabled:opacity-60"
                   x-text="unlinkArmedId === member.id ? 'Tap again to unlink' : 'Unlink'"></button>
+                <button type="button" @click="removeMember(member)" :disabled="isBusy('remove-' + member.id)"
+                  class="min-h-12 rounded-2xl bg-rose-800 px-4 text-lg font-bold text-white disabled:opacity-60"
+                  x-text="removeArmedId === member.id ? 'Tap again to remove' : 'Remove'"></button>
               </div>
             </li>
           </template>
