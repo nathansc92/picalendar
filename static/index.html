@@ -27,7 +27,19 @@
           class="min-h-14 rounded-2xl px-6 text-xl font-bold"
           :class="tab === 'maintenance' ? 'bg-white text-stone-900' : 'bg-stone-800 text-white'">Home Maintenance</button>
       </nav>
+      <div class="flex shrink-0 items-center gap-3">
+        <p class="max-w-56 truncate text-right text-base font-semibold leading-tight"
+          :class="calendarOffline ? 'text-amber-300' : 'text-stone-300'"
+          x-text="syncLabel()"></p>
+        <button type="button" @click="openSettings()" aria-label="Accounts and sync"
+          class="min-h-12 min-w-12 rounded-2xl bg-stone-800 text-3xl leading-none text-white">⚙</button>
+      </div>
     </header>
+
+    <div x-show="calendarOffline" role="status"
+      class="shrink-0 bg-amber-400 px-6 py-3 text-center text-xl font-extrabold text-stone-900">
+      Offline – Calendar edits paused
+    </div>
 
     <main class="min-h-0 flex-1">
       <section x-show="tab === 'calendar'" class="flex h-full min-h-0 flex-col px-6 py-4">
@@ -325,6 +337,7 @@
       :class="keyboardOpen && 'pb-[380px]'" @pointerdown.self="closeEventModal()">
       <form class="my-4 w-full max-w-3xl rounded-3xl bg-white p-8 shadow-2xl" @submit.prevent="saveEvent()">
         <h3 class="text-3xl font-extrabold" x-text="eventForm.id ? 'Edit event' : 'New event'"></h3>
+        <p x-show="calendarOffline" class="mt-3 rounded-2xl bg-amber-100 px-4 py-3 text-lg font-bold text-amber-950">Offline – Calendar edits paused</p>
         <p class="mt-2 text-lg text-stone-600" x-show="eventForm.rrule" x-text="repeatLabel(eventForm.rrule)"></p>
         <p x-show="eventError" role="alert" class="mt-4 rounded-2xl bg-red-100 px-4 py-3 text-lg text-red-900" x-text="eventError"></p>
 
@@ -407,16 +420,68 @@
         </div>
 
         <div class="mt-8 flex flex-wrap items-center justify-between gap-3">
-          <button type="button" x-show="eventForm.id" @click="deleteEventTap()" :disabled="isBusy('event-delete')"
+          <button type="button" x-show="eventForm.id" @click="deleteEventTap()" :disabled="calendarOffline || isBusy('event-delete')"
             class="min-h-12 rounded-2xl px-5 text-lg font-bold text-white disabled:opacity-60"
             :class="eventDeleteArmed ? 'bg-rose-800' : 'bg-rose-600'"
             x-text="eventDeleteArmed ? 'Tap again to delete' : (eventForm.rrule ? 'Delete series' : 'Delete')"></button>
           <div class="ml-auto flex gap-3">
             <button type="button" @click="closeEventModal()" class="min-h-12 rounded-2xl bg-stone-200 px-6 text-lg font-bold">Cancel</button>
-            <button type="submit" :disabled="isBusy('event-save')" class="min-h-12 rounded-2xl bg-teal-700 px-6 text-lg font-bold text-white disabled:opacity-60">Save</button>
+            <button type="submit" :disabled="calendarOffline || isBusy('event-save')" class="min-h-12 rounded-2xl bg-teal-700 px-6 text-lg font-bold text-white disabled:opacity-60">Save</button>
           </div>
         </div>
       </form>
+    </div>
+
+    <div x-show="showSettings" class="fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-stone-900/50 p-6"
+      :class="keyboardOpen && 'pb-[380px]'" @pointerdown.self="closeSettings()">
+      <div class="my-4 w-full max-w-4xl rounded-3xl bg-white p-8 shadow-2xl">
+        <div class="flex items-start justify-between gap-4">
+          <div>
+            <h3 class="text-3xl font-extrabold">Google accounts</h3>
+            <p class="mt-2 text-lg text-stone-600" x-text="syncStatus.detail || syncLabel()"></p>
+          </div>
+          <button type="button" @click="closeSettings()" class="min-h-12 rounded-2xl bg-stone-200 px-5 text-lg font-bold">Close</button>
+        </div>
+        <p x-show="settingsError" role="alert" class="mt-4 rounded-2xl bg-red-100 px-4 py-3 text-lg text-red-900" x-text="settingsError"></p>
+        <p x-show="settingsMessage" class="mt-4 rounded-2xl bg-teal-50 px-4 py-3 text-lg text-teal-950" x-text="settingsMessage"></p>
+        <p x-show="syncStatus.loaded && !syncStatus.credentials_present" class="mt-4 rounded-2xl bg-amber-100 px-4 py-3 text-lg text-amber-950">
+          Put the Google OAuth client file at credentials.json beside main.py. Register the redirect URI below in Google Cloud, and sign in through localhost.
+        </p>
+        <p class="mt-3 text-lg text-stone-600">Redirect URI <span class="font-bold" x-text="oauthRedirectLabel()"></span></p>
+        <ul class="mt-6 space-y-4">
+          <template x-for="member in members" :key="'acct-' + member.id">
+            <li class="rounded-3xl bg-stone-50 p-4 ring-1 ring-stone-200">
+              <div class="flex flex-wrap items-center gap-3">
+                <span class="h-5 w-5 rounded-full" :style="`background-color: ${member.color}`"></span>
+                <p class="text-2xl font-bold" x-text="member.name"></p>
+                <span class="inline-flex min-h-12 items-center rounded-full px-4 text-base font-bold"
+                  :class="member.linked ? 'bg-teal-700 text-white' : 'bg-stone-200 text-stone-700'"
+                  x-text="member.linked ? 'Linked' : 'Not linked'"></span>
+              </div>
+              <label class="mt-3 block text-lg font-bold" :for="'cal-' + member.id">Google calendar id</label>
+              <input :id="'cal-' + member.id" x-model="member.google_calendar_id" type="text" inputmode="none"
+                data-keyboard="text" maxlength="320" placeholder="primary"
+                class="mt-2 w-full rounded-2xl border-2 border-stone-300 px-4 text-xl">
+              <div class="mt-3 flex flex-wrap gap-2">
+                <button type="button" @click="saveCalendarId(member)" :disabled="isBusy('cal-' + member.id)"
+                  class="min-h-12 rounded-2xl bg-stone-800 px-4 text-lg font-bold text-white disabled:opacity-60">Save calendar</button>
+                <button type="button" @click="linkAccount(member)"
+                  class="min-h-12 rounded-2xl bg-teal-700 px-4 text-lg font-bold text-white"
+                  x-text="member.linked ? 'Link again' : 'Link Google'"></button>
+                <button type="button" x-show="member.linked" @click="unlinkAccount(member)" :disabled="isBusy('unlink-' + member.id)"
+                  class="min-h-12 rounded-2xl bg-rose-600 px-4 text-lg font-bold text-white disabled:opacity-60"
+                  x-text="unlinkArmedId === member.id ? 'Tap again to unlink' : 'Unlink'"></button>
+              </div>
+            </li>
+          </template>
+        </ul>
+        <div class="mt-6 flex flex-wrap items-center justify-between gap-3">
+          <p class="text-lg text-stone-600" x-text="lastSyncLabel()"></p>
+          <button type="button" @click="syncNow()" :disabled="isBusy('sync') || syncStatus.syncing"
+            class="min-h-14 rounded-2xl bg-teal-700 px-6 text-xl font-bold text-white disabled:opacity-60"
+            x-text="isBusy('sync') || syncStatus.syncing ? 'Syncing…' : 'Sync now'"></button>
+        </div>
+      </div>
     </div>
 
     <div x-show="showDeleteModal" class="fixed inset-0 z-40 flex items-start justify-center bg-stone-900/50 p-8 pt-24" @pointerdown.self="closeDeleteModal()">

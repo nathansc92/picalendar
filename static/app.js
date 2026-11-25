@@ -282,6 +282,7 @@ document.addEventListener("alpine:init", () => {
     showAssetModal: false,
     showTaskModal: false,
     showEventModal: false,
+    showSettings: false,
     showDeleteModal: false,
     pendingDelete: null,
     choreForm: blankChore(),
@@ -294,6 +295,23 @@ document.addEventListener("alpine:init", () => {
     calendarView: "timeGridWeek",
     calendarLabel: "",
     hiddenMemberIds: [],
+    syncStatus: {
+      online: true,
+      last_synced_at: null,
+      detail: "",
+      linked_count: 0,
+      credentials_present: true,
+      syncing: false,
+      loaded: false,
+    },
+    syncTimer: null,
+    settingsError: "",
+    settingsMessage: "",
+    unlinkArmedId: null,
+
+    get calendarOffline() {
+      return this.syncStatus.loaded && this.syncStatus.linked_count > 0 && this.syncStatus.online === false;
+    },
 
     get filteredChores() {
       const rows = this.chores.filter((chore) => {
@@ -345,11 +363,15 @@ document.addEventListener("alpine:init", () => {
       });
       this.pollVersion();
       this.versionTimer = setInterval(() => this.pollVersion(), 60000);
+      this.pollSync();
+      this.syncTimer = setInterval(() => this.pollSync(), 15000);
+      this.readLaunchParams();
       this.refreshAll();
     },
 
     destroy() {
       if (this.versionTimer) clearInterval(this.versionTimer);
+      if (this.syncTimer) clearInterval(this.syncTimer);
       if (this.onFocusIn) document.removeEventListener("focusin", this.onFocusIn);
       if (this.onPointerDown) {
         document.removeEventListener("pointerdown", this.onPointerDown, true);
@@ -367,6 +389,146 @@ document.addEventListener("alpine:init", () => {
         if (data.started_at !== this.serverStartedAt) window.location.reload();
       } catch (_error) {
         /* Keep the kiosk up if a poll misses. */
+      }
+    },
+
+    readLaunchParams() {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("settings") === "1") this.showSettings = true;
+      if (params.get("auth_error")) this.settingsError = params.get("auth_error");
+      if (params.get("linked")) {
+        this.settingsMessage = "Google account linked. Run Sync now to pull events.";
+      }
+      if ([...params.keys()].length) {
+        window.history.replaceState({}, "", window.location.pathname);
+      }
+    },
+
+    syncLabel() {
+      const status = this.syncStatus;
+      if (!status.loaded) return "Checking sync…";
+      if (status.syncing) return "Syncing…";
+      if (this.calendarOffline) return "Offline";
+      if (!status.linked_count) return "Calendar not linked";
+      if (!status.last_synced_at) return "Linked";
+      return `Synced ${this.formatSyncTime(status.last_synced_at)}`;
+    },
+
+    lastSyncLabel() {
+      if (!this.syncStatus.last_synced_at) return "Has not synced yet";
+      return `Last sync ${this.formatSyncTime(this.syncStatus.last_synced_at)}`;
+    },
+
+    formatSyncTime(iso) {
+      const parsed = new Date(iso);
+      if (Number.isNaN(parsed.getTime())) return iso;
+      return parsed.toLocaleString(undefined, {
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      });
+    },
+
+    oauthRedirectLabel() {
+      return `${window.location.origin}/oauth2callback`;
+    },
+
+    async pollSync() {
+      try {
+        const status = await request("/api/sync/status", { cache: "no-store" });
+        const previous = this.syncStatus.last_synced_at;
+        this.syncStatus = { ...status, loaded: true };
+        if (this.calendar && status.last_synced_at && status.last_synced_at !== previous) {
+          this.calendar.refetchEvents();
+        }
+      } catch (_error) {
+        /* The next poll can refresh the badge if this one misses. */
+      }
+    },
+
+    openSettings() {
+      this.settingsError = "";
+      this.settingsMessage = "";
+      this.unlinkArmedId = null;
+      this.showSettings = true;
+      this.pollSync();
+    },
+
+    closeSettings() {
+      this.showSettings = false;
+      this.unlinkArmedId = null;
+      this.closeKeyboard(true);
+    },
+
+    async saveCalendarId(member) {
+      const value = (member.google_calendar_id || "").trim() || "primary";
+      this.setBusy(`cal-${member.id}`, true);
+      this.settingsError = "";
+      try {
+        const updated = await request(`/api/family-members/${member.id}/calendar`, {
+          method: "PUT",
+          body: { google_calendar_id: value },
+        });
+        const index = this.members.findIndex((item) => item.id === member.id);
+        if (index >= 0) this.members.splice(index, 1, updated);
+        this.settingsMessage = `${updated.name} will sync ${updated.google_calendar_id}.`;
+        return true;
+      } catch (error) {
+        this.settingsError = error.message;
+        return false;
+      } finally {
+        this.setBusy(`cal-${member.id}`, false);
+      }
+    },
+
+    async linkAccount(member) {
+      this.settingsError = "";
+      if (this.syncStatus.loaded && !this.syncStatus.credentials_present) {
+        this.settingsError = "Add credentials.json next to main.py before linking a Google account.";
+        return;
+      }
+      const typed = (member.google_calendar_id || "").trim();
+      if (typed) {
+        const saved = await this.saveCalendarId(member);
+        if (!saved) return;
+      }
+      window.location.assign(`/api/auth/google/${member.id}`);
+    },
+
+    async unlinkAccount(member) {
+      if (this.unlinkArmedId !== member.id) {
+        this.unlinkArmedId = member.id;
+        return;
+      }
+      this.setBusy(`unlink-${member.id}`, true);
+      this.settingsError = "";
+      try {
+        await request(`/api/auth/google/${member.id}`, { method: "DELETE" });
+        this.unlinkArmedId = null;
+        this.settingsMessage = `${member.name} is unlinked.`;
+        await this.refreshAll();
+        await this.pollSync();
+      } catch (error) {
+        this.settingsError = error.message;
+        this.unlinkArmedId = null;
+      } finally {
+        this.setBusy(`unlink-${member.id}`, false);
+      }
+    },
+
+    async syncNow() {
+      this.setBusy("sync", true);
+      this.settingsError = "";
+      try {
+        const status = await request("/api/sync", { method: "POST" });
+        this.syncStatus = { ...status, loaded: true };
+        this.settingsMessage = status.detail || "Sync finished.";
+        if (this.calendar) this.calendar.refetchEvents();
+      } catch (error) {
+        this.settingsError = error.message;
+      } finally {
+        this.setBusy("sync", false);
       }
     },
 
@@ -1035,6 +1197,10 @@ document.addEventListener("alpine:init", () => {
 
     async saveEvent() {
       this.eventDeleteArmed = false;
+      if (this.calendarOffline) {
+        this.eventError = "Offline – Calendar edits paused";
+        return;
+      }
       if (!this.eventForm.title.trim()) {
         this.eventError = "An event needs a title.";
         return;
@@ -1073,6 +1239,10 @@ document.addEventListener("alpine:init", () => {
 
     async deleteEventTap() {
       if (!this.eventForm.id) return;
+      if (this.calendarOffline) {
+        this.eventError = "Offline – Calendar edits paused";
+        return;
+      }
       if (!this.eventDeleteArmed) {
         this.eventDeleteArmed = true;
         return;

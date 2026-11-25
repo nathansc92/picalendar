@@ -1,24 +1,29 @@
 """Family hub kiosk API.
 
-Phase 2 calendar routes read and write SQLite only. `calendar_write_through`
-is the seam Phase 3 should replace with Google Calendar insert, patch, and
-delete calls. Those hooks run before the SQLite write and can raise
-HTTPException to leave the local row unchanged.
+Calendar creates, edits, and deletes go to Google Calendar first when a
+family member is linked, then to SQLite. If Google is unreachable those
+routes return 503 and leave the local row unchanged. Chores and maintenance
+stay local.
 """
 
 from __future__ import annotations
 
+import html
+import logging
 import sqlite3
 from contextlib import asynccontextmanager
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
+from urllib.parse import quote
 
-from fastapi import FastAPI, HTTPException, Query, Response
-from fastapi.responses import FileResponse
+from apscheduler.schedulers.background import BackgroundScheduler
+from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
+import google_calendar
 from database import (
     classify_due,
     compute_next_due,
@@ -34,6 +39,7 @@ BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 INDEX_PATH = STATIC_DIR / "index.html"
 STARTED_AT = datetime.now(timezone.utc).isoformat()
+logger = logging.getLogger("family_hub")
 
 IntervalUnit = Literal["days", "weeks", "months", "years"]
 DueStatus = Literal["overdue", "due_soon", "ok"]
@@ -42,7 +48,22 @@ DueStatus = Literal["overdue", "due_soon", "ok"]
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
-    yield
+    scheduler = BackgroundScheduler(daemon=True)
+    scheduler.add_job(
+        google_calendar.sync_all_calendars,
+        "interval",
+        minutes=5,
+        id="google_calendar_sync",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=120,
+        next_run_time=datetime.now().astimezone() + timedelta(seconds=5),
+    )
+    scheduler.start()
+    try:
+        yield
+    finally:
+        scheduler.shutdown(wait=False)
 
 
 app = FastAPI(title="Family Hub", lifespan=lifespan)
@@ -64,6 +85,29 @@ class FamilyMemberIn(BaseModel):
 class FamilyMemberOut(FamilyMemberIn):
     id: int
     created_at: str
+    google_calendar_id: str | None = None
+    linked: bool = False
+
+
+class MemberCalendarIn(BaseModel):
+    google_calendar_id: str = Field(min_length=1, max_length=320)
+
+    @field_validator("google_calendar_id")
+    @classmethod
+    def strip_calendar(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Calendar id is required")
+        return cleaned
+
+
+class SyncStatusOut(BaseModel):
+    online: bool
+    last_synced_at: str | None = None
+    detail: str = ""
+    linked_count: int = 0
+    credentials_present: bool = False
+    syncing: bool = False
 
 
 class ChoreIn(BaseModel):
@@ -216,28 +260,6 @@ class EventOccurrenceOut(EventOut):
     series_end: str
 
 
-class CalendarWriteThrough:
-    """Phase 3 replaces this object with Google Calendar API calls.
-
-    on_create and on_update return the google_event_id to store. on_delete
-    runs before the local row is removed. Raise HTTPException to abort.
-    """
-
-    def on_create(self, payload: EventIn) -> str | None:
-        return payload.google_event_id
-
-    def on_update(self, existing: sqlite3.Row, payload: EventIn) -> str | None:
-        if payload.google_event_id:
-            return payload.google_event_id
-        return existing["google_event_id"]
-
-    def on_delete(self, existing: sqlite3.Row) -> None:
-        return None
-
-
-calendar_write_through = CalendarWriteThrough()
-
-
 CHORE_SQL = """
 SELECT c.id, c.title, c.notes, c.family_member_id, c.due_date, c.completed,
        c.completed_at, c.created_at, m.name AS member_name, m.color AS member_color
@@ -263,12 +285,63 @@ LEFT JOIN family_members m ON m.id = e.member_id
 
 
 def member_out(row: sqlite3.Row) -> FamilyMemberOut:
+    keys = set(row.keys())
+    calendar_id = row["google_calendar_id"] if "google_calendar_id" in keys else None
     return FamilyMemberOut(
         id=row["id"],
         name=row["name"],
         color=row["color"],
         created_at=row["created_at"],
+        google_calendar_id=calendar_id,
+        linked=google_calendar.member_is_linked(row),
     )
+
+
+def raise_for_google(exc: Exception) -> None:
+    if isinstance(exc, google_calendar.GoogleOffline):
+        raise HTTPException(status_code=503, detail=google_calendar.OFFLINE_DETAIL) from exc
+    if isinstance(exc, google_calendar.GoogleNotLinked):
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if isinstance(exc, google_calendar.GoogleAuthError):
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    if isinstance(exc, google_calendar.GoogleConfigError):
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if isinstance(exc, google_calendar.GoogleRequestError):
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    raise exc
+
+
+def google_redirect_uri(request: Request) -> str:
+    return f"{str(request.base_url).rstrip('/')}/oauth2callback"
+
+
+def oauth_message_page(message: str, status: int) -> HTMLResponse:
+    safe = html.escape(message)
+    body = f"""<!DOCTYPE html>
+<html lang="en"><body style="font-family: sans-serif; padding: 2rem; font-size: 1.4rem;">
+<p>{safe}</p>
+<p><a href="/?settings=1">Back to Family Hub</a></p>
+</body></html>"""
+    return HTMLResponse(body, status_code=status)
+
+
+def auth_error_redirect(message: str) -> RedirectResponse:
+    cleaned = " ".join(message.split())[:180]
+    return RedirectResponse(f"/?settings=1&auth_error={quote(cleaned)}", status_code=302)
+
+
+def event_write_payload(payload: EventIn, start_s: str, end_s: str, rrule: str | None) -> dict:
+    return {
+        "member_id": payload.member_id,
+        "calendar_id": payload.calendar_id,
+        "title": payload.title,
+        "description": payload.description,
+        "start_time": start_s,
+        "end_time": end_s,
+        "all_day": payload.all_day,
+        "rrule": rrule,
+        "google_event_id": payload.google_event_id,
+    }
 
 
 def chore_out(row: sqlite3.Row) -> ChoreOut:
@@ -434,6 +507,64 @@ def version(response: Response) -> dict[str, str]:
     return {"started_at": STARTED_AT}
 
 
+@app.get("/api/sync/status", response_model=SyncStatusOut)
+def sync_status(response: Response) -> dict:
+    response.headers["Cache-Control"] = "no-store"
+    return google_calendar.current_status()
+
+
+@app.post("/api/sync", response_model=SyncStatusOut)
+def sync_now() -> dict:
+    return google_calendar.sync_all_calendars()
+
+
+@app.get("/api/auth/google/{member_id}")
+def start_google_auth(member_id: int, request: Request):
+    with get_connection() as conn:
+        require_member_row(conn, member_id)
+    try:
+        url = google_calendar.authorization_url(member_id, google_redirect_uri(request))
+    except google_calendar.GoogleConfigError as exc:
+        return oauth_message_page(str(exc), 400)
+    except google_calendar.GoogleCalendarError as exc:
+        raise_for_google(exc)
+    return RedirectResponse(url, status_code=302)
+
+
+@app.get("/oauth2callback")
+def oauth2callback(
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+):
+    if error:
+        message = (
+            "Google sign-in was cancelled."
+            if error == "access_denied"
+            else "Google sign-in did not finish."
+        )
+        return auth_error_redirect(message)
+    try:
+        member_id = google_calendar.finish_oauth(state, code)
+    except google_calendar.GoogleCalendarError as exc:
+        return auth_error_redirect(str(exc))
+    except Exception:
+        logger.exception("OAuth callback failed")
+        return auth_error_redirect("Google sign-in could not be finished.")
+    return RedirectResponse(f"/?settings=1&linked={member_id}", status_code=302)
+
+
+@app.delete("/api/auth/google/{member_id}", status_code=204)
+def unlink_google(member_id: int) -> Response:
+    with get_connection() as conn:
+        require_member_row(conn, member_id)
+    try:
+        google_calendar.unlink_member(member_id)
+    except google_calendar.GoogleCalendarError as exc:
+        raise_for_google(exc)
+    return Response(status_code=204)
+
+
 @app.get("/api/family-members", response_model=list[FamilyMemberOut])
 def list_members() -> list[FamilyMemberOut]:
     with get_connection() as conn:
@@ -461,6 +592,18 @@ def get_member(member_id: int) -> FamilyMemberOut:
     return member_out(row)
 
 
+@app.put("/api/family-members/{member_id}/calendar", response_model=FamilyMemberOut)
+def update_member_calendar(member_id: int, payload: MemberCalendarIn) -> FamilyMemberOut:
+    with get_connection() as conn:
+        require_member_row(conn, member_id)
+        conn.execute(
+            "UPDATE family_members SET google_calendar_id = ? WHERE id = ?",
+            (payload.google_calendar_id, member_id),
+        )
+        row = require_member_row(conn, member_id)
+    return member_out(row)
+
+
 @app.put("/api/family-members/{member_id}", response_model=FamilyMemberOut)
 def update_member(member_id: int, payload: FamilyMemberIn) -> FamilyMemberOut:
     with get_connection() as conn:
@@ -477,6 +620,8 @@ def update_member(member_id: int, payload: FamilyMemberIn) -> FamilyMemberOut:
 def delete_member(member_id: int) -> Response:
     with get_connection() as conn:
         require_member_row(conn, member_id)
+    google_calendar.unlink_member(member_id)
+    with get_connection() as conn:
         conn.execute("DELETE FROM family_members WHERE id = ?", (member_id,))
     return Response(status_code=204)
 
@@ -760,10 +905,14 @@ def create_event(payload: EventIn) -> EventOut:
     rrule = validated_rrule(payload, start_dt)
     with get_connection() as conn:
         require_member(conn, payload.member_id)
-    google_event_id = calendar_write_through.on_create(payload)
+    try:
+        written = google_calendar.push_create(event_write_payload(payload, start_s, end_s, rrule))
+    except google_calendar.GoogleCalendarError as exc:
+        raise_for_google(exc)
+    member_id = payload.member_id if payload.member_id is not None else written.member_id
     updated_at = datetime.now().astimezone().isoformat(timespec="seconds")
     with get_connection() as conn:
-        require_member(conn, payload.member_id)
+        require_member(conn, member_id)
         try:
             cursor = conn.execute(
                 """
@@ -773,9 +922,9 @@ def create_event(payload: EventIn) -> EventOut:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    google_event_id,
-                    payload.calendar_id or "primary",
-                    payload.member_id,
+                    written.google_event_id,
+                    written.calendar_id or "primary",
+                    member_id,
                     payload.title,
                     payload.description,
                     start_s,
@@ -802,12 +951,19 @@ def update_event(event_id: int, payload: EventIn) -> EventOut:
         existing = require_event(conn, event_id)
         require_member(conn, payload.member_id)
         existing_values = {key: existing[key] for key in existing.keys()}
-    google_event_id = calendar_write_through.on_update(existing_values, payload)
+    try:
+        written = google_calendar.push_update(
+            existing_values,
+            event_write_payload(payload, start_s, end_s, rrule),
+        )
+    except google_calendar.GoogleCalendarError as exc:
+        raise_for_google(exc)
+    member_id = payload.member_id if payload.member_id is not None else written.member_id
     updated_at = datetime.now().astimezone().isoformat(timespec="seconds")
-    calendar_id = payload.calendar_id or existing_values["calendar_id"] or "primary"
+    calendar_id = written.calendar_id or existing_values["calendar_id"] or "primary"
     with get_connection() as conn:
         require_event(conn, event_id)
-        require_member(conn, payload.member_id)
+        require_member(conn, member_id)
         try:
             conn.execute(
                 """
@@ -818,9 +974,9 @@ def update_event(event_id: int, payload: EventIn) -> EventOut:
                 WHERE id = ?
                 """,
                 (
-                    google_event_id,
+                    written.google_event_id,
                     calendar_id,
-                    payload.member_id,
+                    member_id,
                     payload.title,
                     payload.description,
                     start_s,
@@ -845,7 +1001,10 @@ def delete_event(event_id: int) -> Response:
     with get_connection() as conn:
         existing = require_event(conn, event_id)
         existing_values = {key: existing[key] for key in existing.keys()}
-    calendar_write_through.on_delete(existing_values)
+    try:
+        google_calendar.push_delete(existing_values)
+    except google_calendar.GoogleCalendarError as exc:
+        raise_for_google(exc)
     with get_connection() as conn:
         require_event(conn, event_id)
         conn.execute("DELETE FROM events WHERE id = ?", (event_id,))

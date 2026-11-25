@@ -2,6 +2,7 @@
 
 Phase 1 tables cover family members, chores, assets, and maintenance.
 Phase 2 adds the local calendar cache and expands repeating rows on read.
+Phase 3 stores each person's Google calendar id, token path, and sync tokens.
 """
 
 from __future__ import annotations
@@ -133,6 +134,16 @@ def init_db() -> None:
             )
             """
         )
+        _ensure_member_google_columns(conn)
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sync_state (
+                calendar_id TEXT PRIMARY KEY,
+                sync_token TEXT,
+                last_synced_at TEXT
+            )
+            """
+        )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_chores_member ON chores(family_member_id)"
         )
@@ -167,6 +178,17 @@ def init_db() -> None:
         )
         seed_if_empty(conn)
         seed_events_if_empty(conn)
+
+
+def _ensure_member_google_columns(conn: sqlite3.Connection) -> None:
+    """Add Google account columns without rebuilding an existing family list."""
+    existing = {
+        row["name"] for row in conn.execute("PRAGMA table_info(family_members)")
+    }
+    if "google_calendar_id" not in existing:
+        conn.execute("ALTER TABLE family_members ADD COLUMN google_calendar_id TEXT")
+    if "token_file" not in existing:
+        conn.execute("ALTER TABLE family_members ADD COLUMN token_file TEXT")
 
 
 def seed_if_empty(conn: sqlite3.Connection) -> None:

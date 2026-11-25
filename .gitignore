@@ -221,3 +221,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Google OAuth client secrets and per-account refresh tokens
+credentials.json
+tokens/
